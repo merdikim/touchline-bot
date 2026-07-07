@@ -1,0 +1,7 @@
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_BOT_USERNAME=touchline
+AI_API_KEY=
+TXLINE_BASE_URL=https://txline-dev.txodds.com
+TXLINE_JWT=
+TXLINE_API_TOKEN=
+NODE_ENV=development

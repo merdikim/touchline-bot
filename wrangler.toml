@@ -1,0 +1,31 @@
+name = "touchline-bot"
+main = "src/index.ts"
+compatibility_date = "2026-07-07"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[vars]
+NODE_ENV = "development"
+TELEGRAM_BOT_USERNAME = "touchline"
+TXLINE_BASE_URL = "https://txline-dev.txodds.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "touchline"
+database_id = "replace-with-d1-database-id"
+migrations_dir = "src/db/migrations"
+
+[[queues.producers]]
+binding = "MATCH_POLL_QUEUE"
+queue = "touchline-match-poll"
+
+[[queues.consumers]]
+queue = "touchline-match-poll"
+max_batch_size = 10
+max_batch_timeout = 30
+
+[triggers]
+crons = ["* * * * *"]
