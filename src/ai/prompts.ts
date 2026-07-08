@@ -10,7 +10,7 @@ export function buildIntentPrompt(context: IntentContext): string {
     "- confidence: 0 to 1.",
     "- match.team1 and match.team2: extract the two teams/clubs/countries when the message names a match. Use null for missing teams.",
     "- prediction: for score picks, preserve the user's exact prediction text in raw and extract obvious scores/winner when present.",
-    "- teamQuery/dateQuery: for available fixture searches. For dates, prefer ISO YYYY-MM-DD when the user gives an exact date; otherwise preserve relative words like today, tomorrow, this weekend, or next week.",
+    "- teamQuery/dateQuery: for available fixture searches.",
     "- clarificationQuestion: one short question only when intent is unclear.",
     "- Always include every field from the schema. Use null for fields that do not apply to the chosen intent.",
     "",

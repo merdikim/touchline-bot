@@ -5,8 +5,8 @@ import type { NormalizedFixture, NormalizedScoreState, OddsSummary } from "./typ
 export class TxLineClient {
   constructor(private readonly env: Pick<WorkerEnv, "TXLINE_BASE_URL" | "TXLINE_JWT" | "TXLINE_API_TOKEN">) {}
 
-  async getFixtures(params: Record<string, string | undefined> = {}): Promise<NormalizedFixture[]> {
-    const raw = await this.get("/api/fixtures/snapshot", params);
+  async getFixtures(): Promise<NormalizedFixture[]> {
+    const raw = await this.get("/api/fixtures/snapshot");
     return normalizeFixtures(raw);
   }
 

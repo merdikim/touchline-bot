@@ -15,7 +15,7 @@ import { LeaderboardService } from "../services/leaderboard-service";
 import { CommentaryService } from "../services/commentary-service";
 import { VerificationService } from "../services/verification-service";
 import { displayName } from "./formatters";
-import { formatKickoff, startEpochDayFromDateQuery } from "../utils/dates";
+import { formatKickoff } from "../utils/dates";
 import { newId } from "../utils/ids";
 import { log } from "../utils/logger";
 
@@ -161,10 +161,7 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "get_available_matches") {
-    const startEpochDay = startEpochDayFromDateQuery(deps.intent.dateQuery);
-    const fixtures = await deps.txline.getFixtures({
-      startEpochDay: startEpochDay === undefined ? undefined : String(startEpochDay)
-    });
+    const fixtures = await deps.txline.getFixtures();
     const text = fixtures.slice(0, 20).map((fixture, index) => {
       const details = [fixture.competition, formatKickoff(fixture.startTime)].filter(Boolean).join(", ");
       return `${index + 1}. ${fixture.participant1} vs ${fixture.participant2}${details ? ` (${details})` : ""}`;
@@ -329,7 +326,7 @@ async function resolveScoreTarget(
     return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id };
   }
 
-  const fixtures = await txline.getFixtures({ q: query });
+  const fixtures = await txline.getFixtures();
   const selected = selectFixture(fixtures, match);
   if (!selected) {
     return fixtures.length > 1 ? { kind: "ambiguous", fixtures: fixtures.slice(0, 5) } : { kind: "none" };
