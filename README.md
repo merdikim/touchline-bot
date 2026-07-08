@@ -43,6 +43,38 @@ Authorization: Bearer <TXLINE_JWT>
 X-Api-Token: <TXLINE_API_TOKEN>
 ```
 
+### TxLINE Free World Cup Credentials
+
+The Worker is configured for TxLINE devnet by default:
+
+```txt
+TXLINE_BASE_URL=https://txline-dev.txodds.com
+```
+
+To create the guest JWT and activated API token, run the setup script with a funded Solana keypair. It subscribes to TxLINE's free World Cup service level, starts a guest JWT session, signs the activation payload, activates the API token, and runs a fixtures smoke test.
+
+```sh
+pnpm setup:txline -- --network devnet --keypair ~/.config/solana/id.json
+```
+
+You can also pass the private key directly. The script accepts a base58 secret key, a Solana JSON byte array, or comma-separated bytes. Prefer an environment variable so the key is less likely to land in shell history:
+
+```sh
+SOLANA_PRIVATE_KEY='[1,2,...]' pnpm setup:txline -- --network devnet
+```
+
+Defaults match the documented free devnet tier: service level `1`, `4` weeks, and no custom league list. Useful options:
+
+```sh
+pnpm setup:txline -- --private-key '<base58-or-json-secret-key>'
+pnpm setup:txline -- --network mainnet --service-level 12
+pnpm setup:txline -- --tx-sig <existing-subscription-transaction>
+pnpm setup:txline -- --leagues 501,804,202
+pnpm setup:txline -- --no-smoke
+```
+
+Keep one network consistent for every value: Solana RPC, TxLINE program ID, subscription transaction, guest JWT host, activation host, and `TXLINE_BASE_URL`. The script prints the `TXLINE_JWT` and `TXLINE_API_TOKEN` values to place in `.dev.vars` locally and in Wrangler secrets for deploy.
+
 ## D1 Setup
 
 Create a D1 database:

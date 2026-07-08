@@ -1,12 +1,16 @@
 import type { LeaderboardEntry } from "./leaderboard-service";
 
 export class CommentaryService {
-  createdMatch(input: { participant1: string; participant2: string; kickoff: string }) {
-    return `I'm in. ${input.participant1} vs ${input.participant2} kicks off ${input.kickoff}.\n\nDrop your predictions before kickoff.\nExample: ${input.participant1} 2-1\n\nVerified by TxLINE.`;
+  createdMatch(input: { participant1: string; participant2: string; competition?: string | null; kickoff: string }) {
+    const competition = input.competition ? `\n${input.competition}` : "";
+    return `I'm in. ${input.participant1} vs ${input.participant2}${competition}\nKicks off ${input.kickoff}.\n\nDrop your predictions before kickoff.\nExample: ${input.participant1} 2-1\n\nVerified by TxLINE.`;
   }
 
-  ambiguous(fixtures: Array<{ participant1: string; participant2: string; startTime: string }>) {
-    const options = fixtures.map((fixture, index) => `${index + 1}. ${fixture.participant1} vs ${fixture.participant2} (${fixture.startTime})`).join("\n");
+  ambiguous(fixtures: Array<{ participant1: string; participant2: string; competition?: string | null; startTime: string }>) {
+    const options = fixtures.map((fixture, index) => {
+      const details = [fixture.competition, fixture.startTime].filter(Boolean).join(", ");
+      return `${index + 1}. ${fixture.participant1} vs ${fixture.participant2}${details ? ` (${details})` : ""}`;
+    }).join("\n");
     return `I found a few possible matches:\n\n${options}\n\nMention me with a clearer team or competition name.`;
   }
 
@@ -25,8 +29,8 @@ export class CommentaryService {
     return entries.map((entry, index) => `${index + 1}. ${entry.displayName} - ${entry.points} pts (${entry.prediction})`).join("\n");
   }
 
-  status(input: { participant1: string; participant2: string; participant1Score: number; participant2Score: number; state?: string | null; confirmed?: boolean | null }) {
-    return `${input.participant1} ${input.participant1Score}-${input.participant2Score} ${input.participant2}${input.state ? `\n${input.state}` : ""}\n\n${input.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
+  status(input: { participant1: string; participant2: string; competition?: string | null; participant1Score: number; participant2Score: number; state?: string | null; confirmed?: boolean | null }) {
+    return `${input.participant1} ${input.participant1Score}-${input.participant2Score} ${input.participant2}${input.competition ? `\n${input.competition}` : ""}${input.state ? `\n${input.state}` : ""}\n\n${input.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
   }
 
   odds(input: { favorite?: string; underdog?: string; movement?: string }) {

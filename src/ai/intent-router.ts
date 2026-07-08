@@ -5,7 +5,6 @@ import OpenAI from "openai";
 
 export type IntentContext = {
   text: string;
-  botMentioned: boolean;
   replyToBot: boolean;
   predictionsOpen: boolean;
   latestBotPrompt?: string | null;
@@ -33,10 +32,6 @@ export class IntentRouter {
         model: "openai/gpt-oss-20b",
         messages: [
           {
-            role: "system",
-            content: "You output only valid JSON for Touchline's Telegram bot intent router."
-          },
-          {
             role: "user",
             content: buildIntentPrompt(context)
           }
@@ -62,9 +57,11 @@ export class IntentRouter {
       return {
         intent: "unclear",
         confidence: 0,
-        params: {
-          clarificationQuestion: "I couldn't read that cleanly. Do you want a demo, a leaderboard, a prediction, or the score?"
-        }
+        match: { team1: null, team2: null },
+        prediction: null,
+        teamQuery: null,
+        dateQuery: null,
+        clarificationQuestion: "I couldn't read that cleanly. Do you want a demo, a leaderboard, a prediction, or the score?"
       };
     }
   }
