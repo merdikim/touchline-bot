@@ -38,6 +38,17 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   const verification = new VerificationService(db);
   const router = new IntentRouter(env);
 
+  bot.on("my_chat_member", async (ctx) => {
+    const update = ctx.myChatMember;
+    const chat = update.chat;
+    if (chat.type === "private" || !joinedChat(update.old_chat_member.status, update.new_chat_member.status)) {
+      return;
+    }
+
+    const group = await groups.upsertTelegramGroup({ telegramGroupId: String(chat.id), title: "title" in chat ? chat.title : null });
+    await replyAndRemember(ctx, groups, group.id, commentary.groupIntro(), "group_intro");
+  });
+
   bot.on("message:text", async (ctx) => {
     const message = ctx.message;
     const chat = message.chat;
@@ -100,6 +111,10 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   });
 
   return bot;
+}
+
+function joinedChat(oldStatus: string, newStatus: string) {
+  return (oldStatus === "left" || oldStatus === "kicked") && (newStatus === "member" || newStatus === "administrator");
 }
 
 function stripBotMention(text: string, botUsername: string) {

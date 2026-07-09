@@ -23,7 +23,8 @@ console.log("Send a new message to the bot now. In groups, mention the bot unles
 while (true) {
   const result = await telegram("getUpdates", {
     offset: offset || undefined,
-    timeout: 25
+    timeout: 25,
+    allowed_updates: ["message", "my_chat_member"]
   });
 
   const updates = asUpdates(result);
@@ -66,11 +67,11 @@ async function telegram(method: string, body: Record<string, unknown>) {
   return payload.result;
 }
 
-function asUpdates(value: unknown): Array<{ update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage }> {
+function asUpdates(value: unknown): Array<{ update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; my_chat_member?: unknown }> {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter((item): item is { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage } => {
+  return value.filter((item): item is { update_id: number; message?: TelegramMessage; edited_message?: TelegramMessage; my_chat_member?: unknown } => {
     return Boolean(item) && typeof item === "object" && "update_id" in item && typeof item.update_id === "number";
   });
 }
@@ -100,7 +101,10 @@ function describeWebhookUrl(value: unknown) {
   return `${url}${pending}${error}`;
 }
 
-function describeUpdate(update: { message?: TelegramMessage; edited_message?: TelegramMessage }) {
+function describeUpdate(update: { message?: TelegramMessage; edited_message?: TelegramMessage; my_chat_member?: unknown }) {
+  if (update.my_chat_member) {
+    return "bot membership update";
+  }
   const message = update.message ?? update.edited_message;
   if (!message) {
     return "non-message update";

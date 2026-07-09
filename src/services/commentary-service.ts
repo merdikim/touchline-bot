@@ -1,6 +1,16 @@
 import type { LeaderboardEntry } from "./leaderboard-service";
 
 export class CommentaryService {
+  groupIntro() {
+    return [
+      "Yo, thanks for adding me.",
+      "",
+      "I am here for match days: set up prediction leaderboards, keep score with live updates, and give bragging rights when someone nails it.",
+      "",
+      "Just mention me with a game when you are ready, like: @touchline Brazil vs France"
+    ].join("\n");
+  }
+
   createdMatch(input: { participant1: string; participant2: string; competition?: string | null; kickoff: string }) {
     const competition = input.competition ? `\n${input.competition}` : "";
     return `I'm in. ${input.participant1} vs ${input.participant2}${competition}\nKicks off ${input.kickoff}.\n\nDrop your predictions before kickoff.\nExample: ${input.participant1} 2-1\n\nVerified by TxLINE.`;

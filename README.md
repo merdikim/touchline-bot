@@ -115,7 +115,9 @@ curl http://localhost:8787/health
 After deploy, set the webhook:
 
 ```sh
-curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook?url=https://YOUR_WORKER.workers.dev/webhooks/telegram"
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://YOUR_WORKER.workers.dev/webhooks/telegram","allowed_updates":["message","my_chat_member"]}'
 ```
 
 For local Telegram testing, expose Wrangler with a tunnel and use the public tunnel URL.
