@@ -12,6 +12,10 @@ export type IntentContext = {
     participant1: string;
     participant2: string;
   } | null;
+  activeMatches?: Array<{
+    participant1: string;
+    participant2: string;
+  }>;
 };
 
 export class IntentRouter {

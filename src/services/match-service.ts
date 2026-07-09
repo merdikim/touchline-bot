@@ -65,9 +65,14 @@ export class MatchService {
       }
     });
 
-    const existing = await this.getActiveForGroup(groupId);
+    const [existing] = await this.db
+      .select({ groupMatch: groupMatches, match: matches })
+      .from(groupMatches)
+      .innerJoin(matches, eq(groupMatches.matchId, matches.id))
+      .where(and(eq(groupMatches.groupId, groupId), eq(groupMatches.matchId, matchId), eq(groupMatches.status, "active")))
+      .limit(1);
     if (existing) {
-      await this.db.update(groupMatches).set({ status: "archived", updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, existing.groupMatch.id));
+      return { kind: "selected", groupMatch: existing.groupMatch, match: existing.match };
     }
 
     const odds = await this.txline.getOddsSnapshot(fixture.fixtureId, undefined, fixture.participant1, fixture.participant2).catch(() => null);

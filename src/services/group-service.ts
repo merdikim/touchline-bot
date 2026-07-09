@@ -25,16 +25,17 @@ export class GroupService {
 
   async loadContext(groupId: string) {
     const [group] = await this.db.select().from(groups).where(eq(groups.id, groupId)).limit(1);
-    const [active] = await this.db
+    const activeGroupMatches = await this.db
       .select({ groupMatch: groupMatches, match: matches })
       .from(groupMatches)
       .innerJoin(matches, eq(groupMatches.matchId, matches.id))
       .where(and(eq(groupMatches.groupId, groupId), eq(groupMatches.status, "active")))
-      .orderBy(desc(groupMatches.createdAt))
-      .limit(1);
+      .orderBy(desc(groupMatches.createdAt));
+    const active = activeGroupMatches[0];
 
     return {
       group,
+      activeGroupMatches,
       activeGroupMatch: active?.groupMatch ?? null,
       activeMatch: active?.match ?? null
     };

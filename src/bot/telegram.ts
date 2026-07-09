@@ -1,5 +1,5 @@
 import { Bot, type Context } from "grammy";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
 import { groupMatches, matches, matchStates, oddsSnapshots } from "../db/schema";
 import type { WorkerEnv } from "../env";
@@ -20,6 +20,11 @@ import { newId } from "../utils/ids";
 import { log } from "../utils/logger";
 
 type Db = ReturnType<typeof createDb>;
+type ActiveGroupMatchRow = {
+  groupMatch: typeof groupMatches.$inferSelect;
+  match: typeof matches.$inferSelect;
+};
+type MatchOption = Pick<typeof matches.$inferSelect, "participant1" | "participant2" | "competition" | "startTime">;
 
 export function createTelegramBot(env: WorkerEnv, db: Db) {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
@@ -62,12 +67,13 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
     const intent = await router.route({
       text: routedText,
       replyToBot,
-      predictionsOpen: context.activeGroupMatch?.predictionsOpen === 1,
+      predictionsOpen: context.activeGroupMatches.some((row) => row.groupMatch.predictionsOpen === 1),
       latestBotPrompt: context.group?.latestBotPrompt,
-      activeMatch: context.activeMatch ? { participant1: context.activeMatch.participant1, participant2: context.activeMatch.participant2 } : null
+      activeMatch: context.activeMatch ? { participant1: context.activeMatch.participant1, participant2: context.activeMatch.participant2 } : null,
+      activeMatches: context.activeGroupMatches.map((row) => ({ participant1: row.match.participant1, participant2: row.match.participant2 }))
     });
 
-    console.log('intent', intent)
+    console.log(intent)
 
     try {
       await handleIntent(ctx, {
@@ -124,9 +130,7 @@ async function handleIntent(
     verification: VerificationService;
   }
 ) {
-  const active = deps.context.activeGroupMatch && deps.context.activeMatch
-    ? { groupMatch: deps.context.activeGroupMatch, match: deps.context.activeMatch }
-    : null;
+  const activeGroupMatches = deps.context.activeGroupMatches;
 
   if (deps.intent.intent === "create_group_match") {
     const selection = await deps.matchesService.createGroupMatch(deps.groupId, matchQueryFromRef(deps.intent.match) ?? deps.text);
@@ -171,7 +175,7 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "get_match_status") {
-    const target = await resolveScoreTarget(deps.intent.match, active, deps.txline);
+    const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
     if (target.kind === "none") {
       await replyAndRemember(ctx, deps.groups, deps.groupId, deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : "Mention me with a fixture first, like: @touchline what's the score for Brazil vs France");
       return;
@@ -212,40 +216,62 @@ async function handleIntent(
     return;
   }
 
-  if (!active) {
-    await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
-    return;
-  }
-
   if (deps.intent.intent === "submit_prediction") {
     if (!deps.userId) {
       await ctx.reply("I need a Telegram user to lock that prediction.");
       return;
     }
+    const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
+    if (target.kind === "none") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      return;
+    }
+    if (target.kind === "ambiguous") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      return;
+    }
     const result = await deps.predictions.submit({
-      groupMatchId: active.groupMatch.id,
+      groupMatchId: target.groupMatch.id,
       userId: deps.userId,
-      match: active.match,
+      match: target.match,
       rawPrediction: deps.intent.prediction?.raw || deps.text
     });
     const text = result.ok
-      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, participant1: active.match.participant1, participant2: active.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
+      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
       : result.reason;
     await replyAndRemember(ctx, deps.groups, deps.groupId, text);
     return;
   }
 
   if (deps.intent.intent === "get_leaderboard") {
-    const entries = await deps.leaderboard.calculate(active.groupMatch.id, active.match.id, active.groupMatch.baselineOddsSummary);
+    const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
+    if (target.kind === "none") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      return;
+    }
+    if (target.kind === "ambiguous") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      return;
+    }
+    const entries = await deps.leaderboard.calculate(target.groupMatch.id, target.match.id, target.groupMatch.baselineOddsSummary);
     await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.leaderboard(entries));
     return;
   }
 
   if (deps.intent.intent === "get_odds_commentary") {
-    const odds = await deps.txline.getOddsSnapshot(active.match.txlineFixtureId, undefined, active.match.participant1, active.match.participant2);
+    const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
+    if (target.kind === "none") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      return;
+    }
+    if (target.kind === "ambiguous") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      return;
+    }
+    const odds = await deps.txline.getOddsSnapshot(target.match.txlineFixtureId, undefined, target.match.participant1, target.match.participant2);
     await deps.db.insert(oddsSnapshots).values({
       id: newId("odds"),
-      matchId: active.match.id,
+      matchId: target.match.id,
       txlineTs: Date.now(),
       summary: JSON.stringify(odds),
       rawOddsSnapshot: JSON.stringify(odds.raw)
@@ -255,7 +281,16 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "get_verification") {
-    await replyAndRemember(ctx, deps.groups, deps.groupId, await deps.verification.summarize(active.match.id));
+    const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
+    if (target.kind === "none") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      return;
+    }
+    if (target.kind === "ambiguous") {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      return;
+    }
+    await replyAndRemember(ctx, deps.groups, deps.groupId, await deps.verification.summarize(target.match.id));
     return;
   }
 
@@ -306,30 +341,81 @@ function selectFixture(fixtures: NormalizedFixture[], match: MatchRef) {
   return ranked[0].fixture;
 }
 
+function resolveActiveGroupMatchTarget(
+  match: MatchRef,
+  activeGroupMatches: ActiveGroupMatchRow[]
+):
+  | ({ kind: "selected" } & ActiveGroupMatchRow)
+  | { kind: "ambiguous"; matches: MatchOption[] }
+  | { kind: "none" } {
+  const query = matchQueryFromRef(match);
+  if (!query) {
+    if (activeGroupMatches.length === 0) {
+      return { kind: "none" };
+    }
+    if (activeGroupMatches.length === 1) {
+      return { kind: "selected", ...activeGroupMatches[0] };
+    }
+    return { kind: "ambiguous", matches: activeGroupMatches.map((row) => row.match) };
+  }
+
+  const matchesForRef = activeGroupMatches.filter((row) => matchRefMatchesFixture(match, row.match));
+  if (matchesForRef.length === 0) {
+    return { kind: "none" };
+  }
+  if (matchesForRef.length === 1) {
+    return { kind: "selected", ...matchesForRef[0] };
+  }
+  return { kind: "ambiguous", matches: matchesForRef.map((row) => row.match) };
+}
+
+function activeMatchClarification(matches: MatchOption[]) {
+  const options = matches.map((match, index) => {
+    const details = [match.competition, formatKickoff(match.startTime)].filter(Boolean).join(", ");
+    return `${index + 1}. ${match.participant1} vs ${match.participant2}${details ? ` (${details})` : ""}`;
+  }).join("\n");
+  return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: @touchline leaderboard for Brazil vs France`;
+}
+
 async function resolveScoreTarget(
   match: MatchRef,
-  active: { groupMatch: typeof groupMatches.$inferSelect; match: typeof matches.$inferSelect } | null,
+  activeGroupMatches: ActiveGroupMatchRow[],
   txline: TxLineClient
 ): Promise<
   | { kind: "selected"; fixtureId: number; participant1: string; participant2: string; competition?: string | null; matchId?: string }
-  | { kind: "ambiguous"; fixtures: NormalizedFixture[] }
+  | { kind: "ambiguous"; fixtures: MatchOption[] }
   | { kind: "none" }
 > {
   const query = matchQueryFromRef(match);
   if (!query) {
-    return active
-      ? { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id }
-      : { kind: "none" };
+    if (activeGroupMatches.length === 0) {
+      return { kind: "none" };
+    }
+    if (activeGroupMatches.length > 1) {
+      return { kind: "ambiguous", fixtures: activeGroupMatches.map((row) => row.match) };
+    }
+    const active = activeGroupMatches[0];
+    return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id };
   }
 
-  if (active && matchRefMatchesFixture(match, active.match)) {
+  const activeMatchesForRef = activeGroupMatches.filter((row) => matchRefMatchesFixture(match, row.match));
+  if (activeMatchesForRef.length === 1) {
+    const active = activeMatchesForRef[0];
     return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id };
+  }
+  if (activeMatchesForRef.length > 1) {
+    return { kind: "ambiguous", fixtures: activeMatchesForRef.map((row) => row.match) };
   }
 
   const fixtures = await txline.getFixtures();
   const selected = selectFixture(fixtures, match);
   if (!selected) {
-    return fixtures.length > 1 ? { kind: "ambiguous", fixtures: fixtures.slice(0, 5) } : { kind: "none" };
+    return fixtures.length > 1 ? { kind: "ambiguous", fixtures: fixtures.slice(0, 5).map((fixture) => ({
+      participant1: fixture.participant1,
+      participant2: fixture.participant2,
+      competition: fixture.competition ?? null,
+      startTime: fixture.startTime
+    })) } : { kind: "none" };
   }
 
   return { kind: "selected", fixtureId: selected.fixtureId, participant1: selected.participant1, participant2: selected.participant2, competition: selected.competition };
@@ -381,7 +467,15 @@ async function createDemoMatch(db: Db, groupId: string) {
     target: matches.txlineFixtureId,
     set: { startTime: kickoff, updatedAt: new Date().toISOString() }
   });
-  await db.update(groupMatches).set({ status: "archived", updatedAt: new Date().toISOString() }).where(eq(groupMatches.groupId, groupId));
+  const [existing] = await db
+    .select({ match: matches })
+    .from(groupMatches)
+    .innerJoin(matches, eq(groupMatches.matchId, matches.id))
+    .where(and(eq(groupMatches.groupId, groupId), eq(groupMatches.matchId, matchId), eq(groupMatches.status, "active")))
+    .limit(1);
+  if (existing) {
+    return existing.match;
+  }
   await db.insert(groupMatches).values({
     id: newId("group_match"),
     groupId,

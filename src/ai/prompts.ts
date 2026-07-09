@@ -42,6 +42,7 @@ export function buildIntentPrompt(context: IntentContext): string {
     `Reply to bot: ${context.replyToBot}`,
     `Predictions open: ${context.predictionsOpen}`,
     `Active match: ${context.activeMatch ? `${context.activeMatch.participant1} vs ${context.activeMatch.participant2}` : "none"}`,
+    `Active matches: ${context.activeMatches?.length ? context.activeMatches.map((match) => `${match.participant1} vs ${match.participant2}`).join("; ") : "none"}`,
     `Recent bot prompt: ${context.latestBotPrompt ?? "none"}`,
     "",
     "Return one JSON object only."
