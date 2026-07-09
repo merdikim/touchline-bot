@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { createDb } from "./db/client";
-import type { AppEnv, MatchPollJob } from "./env";
+import type { AppEnv, PollMatchJob } from "./env";
 import { createTelegramBot } from "./bot/telegram";
 import { MatchWatcherService } from "./services/match-watcher-service";
 import { TxLineClient } from "./txline/client";
@@ -22,9 +22,9 @@ export function createApp() {
     const env = c.env;
     const db = createDb(env);
     const watcher = new MatchWatcherService(db, new TxLineClient(env), env);
-    const body = await c.req.json<Partial<MatchPollJob>>().catch((): Partial<MatchPollJob> => ({}));
+    const body = await c.req.json<Partial<PollMatchJob>>().catch((): Partial<PollMatchJob> => ({}));
     if (body.groupMatchId && body.matchId && body.txlineFixtureId) {
-      await watcher.poll(body as MatchPollJob);
+      await watcher.poll(body as PollMatchJob, env.MATCH_POLL_QUEUE);
     } else {
       await watcher.enqueueActiveMatches(env.MATCH_POLL_QUEUE);
     }

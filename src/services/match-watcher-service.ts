@@ -2,8 +2,9 @@ import { and, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
 import { groupMatches, matchEvents, matches, matchStates } from "../db/schema";
 import type { TxLineClient } from "../txline/client";
-import type { MatchPollJob, WorkerEnv } from "../env";
+import type { MatchPollJob, PollMatchJob, WorkerEnv } from "../env";
 import { newId } from "../utils/ids";
+import { formatKickoff } from "../utils/dates";
 import { CommentaryService } from "./commentary-service";
 import { LeaderboardService } from "./leaderboard-service";
 import { TelegramMessageSender } from "../bot/message-sender";
@@ -28,13 +29,14 @@ export class MatchWatcherService {
       .where(and(eq(groupMatches.status, "active")));
 
     await Promise.all(rows.map((row) => queue.send({
+      kind: "poll_match",
       groupMatchId: row.groupMatch.id,
       matchId: row.match.id,
       txlineFixtureId: row.match.txlineFixtureId
     })));
   }
 
-  async poll(job: MatchPollJob) {
+  async poll(job: PollMatchJob, queue?: Queue<MatchPollJob>) {
     const [row] = await this.db
       .select({ groupMatch: groupMatches, match: matches })
       .from(groupMatches)
@@ -64,17 +66,54 @@ export class MatchWatcherService {
       verified: next.confirmed ? 1 : 0
     });
 
-    const entries = await this.leaderboard.calculate(job.groupMatchId, job.matchId, row.groupMatch.baselineOddsSummary);
-    const text = final
-      ? this.commentary.finalRecap({ participant1: row.match.participant1, participant2: row.match.participant2, p1: next.participant1Score, p2: next.participant2Score, entries })
-      : this.commentary.goalUpdate({ participant1: row.match.participant1, participant2: row.match.participant2, p1: next.participant1Score, p2: next.participant2Score, leader: entries[0]?.displayName });
-
     const groupId = row.groupMatch.groupId.replace("telegram_group_", "");
-    await this.sender.sendMessage(groupId, text);
+    const entries = await this.leaderboard.calculate(job.groupMatchId, job.matchId, row.groupMatch.baselineOddsSummary);
+    await this.sender.sendMessage(groupId, this.commentary.matchChange({
+      participant1: row.match.participant1,
+      participant2: row.match.participant2,
+      previous: previous[0] ?? null,
+      next: {
+        participant1Score: next.participant1Score,
+        participant2Score: next.participant2Score,
+        state: next.displayState ?? next.gameState,
+        confirmed: next.confirmed
+      },
+      final
+    }));
+    if (final) {
+      const winnerMessage = this.commentary.matchWinner({
+        participant1: row.match.participant1,
+        participant2: row.match.participant2,
+        participant1Score: next.participant1Score,
+        participant2Score: next.participant2Score
+      });
+      if (winnerMessage) {
+        await this.sender.sendMessage(groupId, winnerMessage);
+      }
+      const perfectEntries = entries.filter((entry) => entry.perfect);
+      if (perfectEntries.length === 1) {
+        await this.sender.sendMessage(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { parseMode: "HTML" });
+      }
+      if (perfectEntries.length === 0) {
+        await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: row.groupMatch.groupId }, { delaySeconds: 300 });
+      }
+    }
+    await this.sender.sendMessage(groupId, this.commentary.leaderboardUpdate(entries, final));
 
     if (final) {
       await this.db.update(groupMatches).set({ status: "final", predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
     }
+  }
+
+  async sendNoPerfectPickFollowUp(groupId: string) {
+    const fixtures = await this.txline.getFixtures();
+    const text = this.commentary.moreMatchesToTry(fixtures.slice(0, 5).map((fixture) => ({
+      participant1: fixture.participant1,
+      participant2: fixture.participant2,
+      competition: fixture.competition ?? null,
+      kickoff: formatKickoff(fixture.startTime)
+    })));
+    await this.sender.sendMessage(groupId.replace("telegram_group_", ""), text);
   }
 
   private async upsertState(matchId: string, score: { gameState?: string; displayState?: string; participant1Score: number; participant2Score: number; seq?: number; timestamp?: number; confirmed?: boolean; raw: unknown }) {

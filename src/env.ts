@@ -13,8 +13,16 @@ export type AppEnv = {
 
 export type WorkerEnv = AppEnv["Bindings"];
 
-export type MatchPollJob = {
+export type PollMatchJob = {
+  kind?: "poll_match";
   groupMatchId: string;
   matchId: string;
   txlineFixtureId: number;
 };
+
+export type NoPerfectPickFollowUpJob = {
+  kind: "no_perfect_pick_follow_up";
+  groupId: string;
+};
+
+export type MatchPollJob = PollMatchJob | NoPerfectPickFollowUpJob;

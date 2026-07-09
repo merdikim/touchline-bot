@@ -52,10 +52,64 @@ export class CommentaryService {
     return `GOAL. ${leading} ${input.p1}-${input.p2}.\n\n${input.leader ? `${input.leader}'s pick is looking good now.` : "Leaderboard is moving."}\n\nVerified by TxLINE.`;
   }
 
+  matchChange(input: {
+    participant1: string;
+    participant2: string;
+    previous?: { participant1Score: number; participant2Score: number } | null;
+    next: { participant1Score: number; participant2Score: number; state?: string | null; confirmed?: boolean | null };
+    final: boolean;
+  }) {
+    const score = `${input.participant1} ${input.next.participant1Score}-${input.next.participant2Score} ${input.participant2}`;
+    const previousScore = input.previous
+      ? ` from ${input.previous.participant1Score}-${input.previous.participant2Score}`
+      : "";
+    const headline = input.final ? `Full-time: ${score}.` : `Score update: ${score}${previousScore}.`;
+    return `${headline}${input.next.state ? `\n${input.next.state}` : ""}\n\n${input.next.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
+  }
+
+  leaderboardUpdate(entries: LeaderboardEntry[], final = false) {
+    return `${final ? "Final leaderboard" : "Updated leaderboard"}:\n${this.leaderboard(entries)}`;
+  }
+
+  matchWinner(input: { participant1: string; participant2: string; participant1Score: number; participant2Score: number }) {
+    if (input.participant1Score === input.participant2Score) {
+      return null;
+    }
+    const winner = input.participant1Score > input.participant2Score ? input.participant1 : input.participant2;
+    return `What a finish. ${winner} take the win. Big cheers to everyone who called it.`;
+  }
+
+  perfectPickWinner(entry: LeaderboardEntry) {
+    const mention = `<a href="tg://user?id=${escapeHtmlAttribute(entry.platformUserId)}">${escapeHtml(entry.displayName)}</a>`;
+    return `Perfect pick. ${mention} called the exact score. Take a bow.`;
+  }
+
+  moreMatchesToTry(matches: Array<{ participant1: string; participant2: string; competition?: string | null; kickoff: string }>) {
+    if (matches.length === 0) {
+      return "No perfect picks this time. Ask me for available matches and we will find the next one.";
+    }
+    const options = matches.map((match, index) => {
+      const details = [match.competition, match.kickoff].filter(Boolean).join(", ");
+      return `${index + 1}. ${match.participant1} vs ${match.participant2}${details ? ` (${details})` : ""}`;
+    }).join("\n");
+    return `No perfect picks this time. Plenty more chances coming up:\n\n${options}\n\nMention me to start another leaderboard.`;
+  }
+
   finalRecap(input: { participant1: string; participant2: string; p1: number; p2: number; entries: LeaderboardEntry[] }) {
     const winner = input.entries[0]?.displayName ?? "No winner";
     const perfect = input.entries.find((entry) => entry.perfect)?.displayName ?? "None";
     const boldest = input.entries.find((entry) => entry.boldPick)?.displayName ?? "None";
     return `Full-time: ${input.participant1} ${input.p1}-${input.p2} ${input.participant2}.\n\nWinner: ${winner}\nPerfect score: ${perfect}\nBoldest pick: ${boldest}\n\nVerified by TxLINE.`;
   }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeHtmlAttribute(value: string) {
+  return escapeHtml(value).replaceAll('"', "&quot;");
 }
