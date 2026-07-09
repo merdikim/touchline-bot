@@ -51,35 +51,55 @@ export class MatchWatcherService {
     const next = await this.txline.getScoreSnapshot(job.txlineFixtureId);
     await this.upsertState(job.matchId, next);
 
-    const changedScore = !previous[0] || previous[0].participant1Score !== next.participant1Score || previous[0].participant2Score !== next.participant2Score;
+    const previousState = previous[0] ?? null;
+    const changedScore = Boolean(previousState && (previousState.participant1Score !== next.participant1Score || previousState.participant2Score !== next.participant2Score));
     const final = /full|final|ft/i.test(next.gameState ?? "");
-    if (!changedScore && !final) {
+    const started = row.groupMatch.predictionsOpen === 1 && !final && isMatchStarted(row.match.startTime, next);
+    if (!started && !changedScore && !final) {
       return;
     }
 
-    await this.db.insert(matchEvents).values({
-      id: newId("match_event"),
-      matchId: job.matchId,
-      eventType: final ? "full_time" : "score_change",
-      payload: JSON.stringify(next),
-      txlineReference: next.seq ? String(next.seq) : null,
-      verified: next.confirmed ? 1 : 0
-    });
-
     const groupId = row.groupMatch.groupId.replace("telegram_group_", "");
+    if (started) {
+      await this.db.insert(matchEvents).values({
+        id: newId("match_event"),
+        matchId: job.matchId,
+        eventType: "match_started",
+        payload: JSON.stringify(next),
+        txlineReference: next.seq ? String(next.seq) : null,
+        verified: next.confirmed ? 1 : 0
+      });
+      await this.db.update(groupMatches).set({ predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
+      await this.sender.sendMessage(groupId, this.commentary.matchStarted({
+        participant1: row.match.participant1,
+        participant2: row.match.participant2,
+        state: next.displayState ?? next.gameState
+      }));
+    }
+
     const entries = await this.leaderboard.calculate(job.groupMatchId, job.matchId, row.groupMatch.baselineOddsSummary);
-    await this.sender.sendMessage(groupId, this.commentary.matchChange({
-      participant1: row.match.participant1,
-      participant2: row.match.participant2,
-      previous: previous[0] ?? null,
-      next: {
-        participant1Score: next.participant1Score,
-        participant2Score: next.participant2Score,
-        state: next.displayState ?? next.gameState,
-        confirmed: next.confirmed
-      },
-      final
-    }));
+    if (changedScore || final) {
+      await this.db.insert(matchEvents).values({
+        id: newId("match_event"),
+        matchId: job.matchId,
+        eventType: final ? "full_time" : "score_change",
+        payload: JSON.stringify(next),
+        txlineReference: next.seq ? String(next.seq) : null,
+        verified: next.confirmed ? 1 : 0
+      });
+      await this.sender.sendMessage(groupId, this.commentary.matchChange({
+        participant1: row.match.participant1,
+        participant2: row.match.participant2,
+        previous: previousState,
+        next: {
+          participant1Score: next.participant1Score,
+          participant2Score: next.participant2Score,
+          state: next.displayState ?? next.gameState,
+          confirmed: next.confirmed
+        },
+        final
+      }));
+    }
     if (final) {
       const winnerMessage = this.commentary.matchWinner({
         participant1: row.match.participant1,
@@ -98,7 +118,9 @@ export class MatchWatcherService {
         await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: row.groupMatch.groupId }, { delaySeconds: 300 });
       }
     }
-    await this.sender.sendMessage(groupId, this.commentary.leaderboardUpdate(entries, final));
+    if (changedScore || final) {
+      await this.sender.sendMessage(groupId, this.commentary.leaderboardUpdate(entries, final));
+    }
 
     if (final) {
       await this.db.update(groupMatches).set({ status: "final", predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
@@ -143,4 +165,14 @@ export class MatchWatcherService {
       }
     });
   }
+}
+
+function isMatchStarted(startTime: string, score: { gameState?: string; displayState?: string }) {
+  const state = `${score.gameState ?? ""} ${score.displayState ?? ""}`.toLowerCase();
+  if (/\b(live|in[_ -]?play|started|kick[_ -]?off|first half|second half|1h|2h|half[_ -]?time|ht)\b/.test(state)) {
+    return true;
+  }
+
+  const kickoff = new Date(startTime).getTime();
+  return Number.isFinite(kickoff) && Date.now() >= kickoff;
 }

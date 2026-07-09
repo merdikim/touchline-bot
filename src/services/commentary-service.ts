@@ -77,6 +77,10 @@ export class CommentaryService {
     return `${headline}${input.next.state ? `\n${input.next.state}` : ""}\n\n${input.next.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
   }
 
+  matchStarted(input: { participant1: string; participant2: string; state?: string | null }) {
+    return `We are off: ${input.participant1} vs ${input.participant2}.${input.state ? `\n${input.state}` : ""}\n\nPredictions are locked. Let the bragging rights begin.`;
+  }
+
   leaderboardUpdate(entries: LeaderboardEntry[], final = false) {
     return `${final ? "Final leaderboard" : "Updated leaderboard"}:\n${this.leaderboard(entries)}`;
   }
