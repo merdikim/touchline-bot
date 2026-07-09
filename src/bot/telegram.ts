@@ -212,7 +212,12 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "smalltalk") {
-    await replyAndRemember(ctx, deps.groups, deps.groupId, "I'm here. Give me a fixture and I'll run the leaderboard.");
+    const smalltalkCount = await deps.groups.countBotMessages({ groupId: deps.groupId, messageType: "smalltalk" });
+    if (smalltalkCount >= 2) {
+      await replyAndRemember(ctx, deps.groups, deps.groupId, gamesOnlyResponse(), "smalltalk_limit");
+      return;
+    }
+    await replyAndRemember(ctx, deps.groups, deps.groupId, conciseSmalltalkResponse(deps.intent.smalltalkResponse), "smalltalk");
     return;
   }
 
@@ -297,9 +302,17 @@ async function handleIntent(
   await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
 }
 
-async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, text: string) {
-  await ctx.reply(text);
+async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, text: string, messageType?: string) {
+  const message = await ctx.reply(text);
   await groups.setLatestBotPrompt(groupId, text);
+  if (messageType) {
+    await groups.rememberBotMessage({
+      groupId,
+      telegramMessageId: String(message.message_id),
+      messageType,
+      payload: { text }
+    });
+  }
 }
 
 function matchQueryFromRef(match: MatchRef) {
@@ -375,6 +388,19 @@ function activeMatchClarification(matches: MatchOption[]) {
     return `${index + 1}. ${match.participant1} vs ${match.participant2}${details ? ` (${details})` : ""}`;
   }).join("\n");
   return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: @touchline leaderboard for Brazil vs France`;
+}
+
+function conciseSmalltalkResponse(response?: string | null) {
+  const fallback = "I'm here, ready when the group needs a leaderboard.";
+  const trimmed = response?.replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.length > 180 ? `${trimmed.slice(0, 177).trimEnd()}...` : trimmed;
+}
+
+function gamesOnlyResponse() {
+  return "I only focus on the games from here. Mention a fixture, prediction, or leaderboard.";
 }
 
 async function resolveScoreTarget(

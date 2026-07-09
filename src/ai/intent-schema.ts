@@ -30,6 +30,7 @@ export type BotIntent = {
   teamQuery: string | null;
   dateQuery: string | null;
   clarificationQuestion: string | null;
+  smalltalkResponse: string | null;
 };
 
 const matchRefSchema = {
@@ -45,7 +46,7 @@ const matchRefSchema = {
 export const intentJsonSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["intent", "confidence", "match", "prediction", "teamQuery", "dateQuery", "clarificationQuestion"],
+  required: ["intent", "confidence", "match", "prediction", "teamQuery", "dateQuery", "clarificationQuestion", "smalltalkResponse"],
   properties: {
     intent: {
       type: "string",
@@ -77,6 +78,7 @@ export const intentJsonSchema = {
     },
     teamQuery: { type: ["string", "null"] },
     dateQuery: { type: ["string", "null"] },
-    clarificationQuestion: { type: ["string", "null"] }
+    clarificationQuestion: { type: ["string", "null"] },
+    smalltalkResponse: { type: ["string", "null"], maxLength: 180 }
   }
 } as const;

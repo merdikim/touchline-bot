@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
 import { botMessages, groupMatches, groups, matches } from "../db/schema";
 import { newId } from "../utils/ids";
@@ -54,6 +54,14 @@ export class GroupService {
       payload: input.payload ? JSON.stringify(input.payload) : null
     });
     return input;
+  }
+
+  async countBotMessages(input: { groupId: string; messageType: string }) {
+    const [row] = await this.db
+      .select({ total: count() })
+      .from(botMessages)
+      .where(and(eq(botMessages.groupId, input.groupId), eq(botMessages.messageType, input.messageType)));
+    return row?.total ?? 0;
   }
 
   newGroupMatchId() {

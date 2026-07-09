@@ -65,7 +65,8 @@ export class IntentRouter {
         prediction: null,
         teamQuery: null,
         dateQuery: null,
-        clarificationQuestion: "I couldn't read that cleanly. Do you want a demo, a leaderboard, a prediction, or the score?"
+        clarificationQuestion: "I couldn't read that cleanly. Do you want a demo, a leaderboard, a prediction, or the score?",
+        smalltalkResponse: null
       };
     }
   }
