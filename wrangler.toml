@@ -7,15 +7,10 @@ compatibility_flags = ["nodejs_compat"]
 enabled = true
 head_sampling_rate = 1
 
-[vars]
-NODE_ENV = "development"
-TELEGRAM_BOT_USERNAME = "touchline"
-TXLINE_BASE_URL = "https://txline-dev.txodds.com"
-
 [[d1_databases]]
 binding = "DB"
 database_name = "touchline"
-database_id = "replace-with-d1-database-id"
+database_id = "f056162d-868b-4bac-b236-a234f8245a18"
 migrations_dir = "src/db/migrations"
 
 [[queues.producers]]

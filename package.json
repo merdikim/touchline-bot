@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:telegram-poll": "tsx scripts/telegram-poll-webhook.ts",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm deploy:secrets && pnpm db:migrate:remote && pnpm deploy:worker",
+    "deploy:secrets": "wrangler secret bulk .dev.vars",
+    "deploy:worker": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply touchline --local",

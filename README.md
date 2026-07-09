@@ -45,7 +45,7 @@ X-Api-Token: <TXLINE_API_TOKEN>
 
 ### TxLINE Free World Cup Credentials
 
-The Worker is configured for TxLINE devnet by default:
+Set TxLINE's devnet host in `.dev.vars`:
 
 ```txt
 TXLINE_BASE_URL=https://txline-dev.txodds.com
@@ -73,7 +73,7 @@ pnpm setup:txline -- --leagues 501,804,202
 pnpm setup:txline -- --no-smoke
 ```
 
-Keep one network consistent for every value: Solana RPC, TxLINE program ID, subscription transaction, guest JWT host, activation host, and `TXLINE_BASE_URL`. The script prints the `TXLINE_JWT` and `TXLINE_API_TOKEN` values to place in `.dev.vars` locally and in Wrangler secrets for deploy.
+Keep one network consistent for every value: Solana RPC, TxLINE program ID, subscription transaction, guest JWT host, activation host, and `TXLINE_BASE_URL`. The script prints the `TXLINE_JWT` and `TXLINE_API_TOKEN` values to place in `.dev.vars`.
 
 ## D1 Setup
 
@@ -133,14 +133,10 @@ The script calls `/api/fixtures/snapshot` and prints the status plus the first p
 ## Deploy
 
 ```sh
-wrangler secret put TELEGRAM_BOT_TOKEN
-wrangler secret put AI_API_KEY
-wrangler secret put TXLINE_JWT
-wrangler secret put TXLINE_API_TOKEN
-pnpm deploy
+pnpm run deploy
 ```
 
-Set non-secret values in `wrangler.toml` or via Wrangler vars.
+`pnpm run deploy` first uploads every key from `.dev.vars` to Worker secrets with `wrangler secret bulk .dev.vars`, applies remote D1 migrations, then runs `wrangler deploy`. Keep `.dev.vars` out of git.
 
 ## Example Interactions
 
