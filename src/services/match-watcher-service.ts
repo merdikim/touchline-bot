@@ -5,7 +5,6 @@ import type { TxLineClient } from "../txline/client";
 import type { MatchPollJob, PollMatchJob, WorkerEnv } from "../env";
 import { newId } from "../utils/ids";
 import { formatKickoff } from "../utils/dates";
-import { AiMessageFormatter } from "../ai/message-formatter";
 import { CommentaryService } from "./commentary-service";
 import { LeaderboardService } from "./leaderboard-service";
 import { TelegramMessageSender } from "../bot/message-sender";
@@ -16,12 +15,10 @@ export class MatchWatcherService {
   private readonly commentary = new CommentaryService();
   private readonly leaderboard: LeaderboardService;
   private readonly sender: TelegramMessageSender;
-  private readonly formatter: AiMessageFormatter;
 
   constructor(private readonly db: Db, private readonly txline: TxLineClient, env: WorkerEnv) {
     this.leaderboard = new LeaderboardService(db);
     this.sender = new TelegramMessageSender(env);
-    this.formatter = new AiMessageFormatter(env);
   }
 
   async enqueueActiveMatches(queue: Queue<MatchPollJob>) {
@@ -142,8 +139,10 @@ export class MatchWatcherService {
   }
 
   private async sendHumanized(chatId: string, draft: string, options: { kind: string; parseMode?: "HTML" }) {
-    const text = await this.formatter.format(draft, { kind: options.kind, parseMode: options.parseMode });
-    await this.sender.sendMessage(chatId, text, { parseMode: options.parseMode });
+    await this.sender.sendMessage(chatId, draft, {
+      parseMode: options.parseMode,
+      formatContext: { kind: options.kind }
+    });
   }
 
   private async upsertState(matchId: string, score: { gameState?: string; displayState?: string; participant1Score: number; participant2Score: number; seq?: number; timestamp?: number; confirmed?: boolean; raw: unknown }) {
