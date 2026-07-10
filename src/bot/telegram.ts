@@ -27,6 +27,34 @@ type ActiveGroupMatchRow = {
   match: typeof matches.$inferSelect;
 };
 type MatchOption = Pick<typeof matches.$inferSelect, "participant1" | "participant2" | "competition" | "startTime">;
+type RememberedFixture = Pick<NormalizedFixture, "fixtureId" | "competitionId" | "competition" | "participant1" | "participant2" | "participant1IsHome" | "startTime"> & { raw?: unknown };
+type PendingAction = {
+  action: "set_match_alert";
+  offsetMinutes?: number;
+  remindInMinutes?: number;
+};
+type HandleIntentDeps = {
+  db: Db;
+  env: WorkerEnv;
+  groupId: string;
+  userId?: string;
+  userDisplayName: string;
+  text: string;
+  intent: Awaited<ReturnType<IntentRouter["route"]>>;
+  context: Awaited<ReturnType<GroupService["loadContext"]>>;
+  txline: TxLineClient;
+  groups: GroupService;
+  matchesService: MatchService;
+  predictions: PredictionService;
+  leaderboard: LeaderboardService;
+  commentary: CommentaryService;
+  verification: VerificationService;
+  reminders: ReminderService;
+  repliedFixtures: RememberedFixture[];
+  pendingAction: PendingAction | null;
+  formatter: AiMessageFormatter;
+};
+type SendReply = (text: string, messageType?: string, payload?: Record<string, unknown>) => Promise<void>;
 
 export function createTelegramBot(env: WorkerEnv, db: Db) {
   const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
@@ -78,12 +106,16 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
       displayName: displayName(message.from)
     }) : null;
     const context = await groups.loadContext(group.id);
+    const repliedBotMessage = message.reply_to_message
+      ? await groups.loadBotMessage({ groupId: group.id, telegramMessageId: String(message.reply_to_message.message_id) })
+      : null;
 
     const intent = await router.route({
       text: routedText,
       replyToBot,
       predictionsOpen: context.activeGroupMatches.some((row) => row.groupMatch.predictionsOpen === 1),
       latestBotPrompt: context.group?.latestBotPrompt,
+      repliedBotMessageText: message.reply_to_message && "text" in message.reply_to_message ? message.reply_to_message.text : null,
       activeMatch: context.activeMatch ? { participant1: context.activeMatch.participant1, participant2: context.activeMatch.participant2 } : null,
       activeMatches: context.activeGroupMatches.map((row) => ({ participant1: row.match.participant1, participant2: row.match.participant2 }))
     });
@@ -108,6 +140,8 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
         commentary,
         verification,
         reminders,
+        repliedFixtures: fixturesFromBotMessagePayload(repliedBotMessage?.payload),
+        pendingAction: pendingActionFromBotMessagePayload(repliedBotMessage?.payload),
         formatter
       });
     } catch (error) {
@@ -133,38 +167,47 @@ function stripBotMention(text: string, botUsername: string) {
 
 async function handleIntent(
   ctx: Context,
-  deps: {
-    db: Db;
-    env: WorkerEnv;
-    groupId: string;
-    userId?: string;
-    userDisplayName: string;
-    text: string;
-    intent: Awaited<ReturnType<IntentRouter["route"]>>;
-    context: Awaited<ReturnType<GroupService["loadContext"]>>;
-    txline: TxLineClient;
-    groups: GroupService;
-    matchesService: MatchService;
-    predictions: PredictionService;
-    leaderboard: LeaderboardService;
-    commentary: CommentaryService;
-    verification: VerificationService;
-    reminders: ReminderService;
-    formatter: AiMessageFormatter;
-  }
+  deps: HandleIntentDeps
 ) {
   const activeGroupMatches = deps.context.activeGroupMatches;
-  const send = (text: string, messageType?: string) => replyAndRemember(
+  const send = (text: string, messageType?: string, payload?: Record<string, unknown>) => replyAndRemember(
     ctx,
     deps.groups,
     deps.groupId,
     deps.formatter,
     text,
     messageType,
-    { kind: messageType ?? deps.intent.intent, userMessage: deps.text }
+    { kind: messageType ?? deps.intent.intent, userMessage: deps.text },
+    payload
   );
 
+  if (deps.pendingAction?.action === "set_match_alert") {
+    const handled = await handleSetMatchAlert(ctx, deps, send, deps.pendingAction);
+    if (handled) {
+      return;
+    }
+  }
+
   if (deps.intent.intent === "create_group_match") {
+    const repliedFixture = selectRepliedFixture(deps.repliedFixtures, deps.text);
+    if (repliedFixture.kind === "ambiguous") {
+      await send("I see a few fixtures in that message. Reply with the number too, like: alert me 1 hour before 2");
+      return;
+    }
+    if (repliedFixture.kind === "selected") {
+      const selection = await deps.matchesService.createGroupMatchFromFixture(deps.groupId, normalizeRememberedFixture(repliedFixture.fixture));
+      if (selection.kind === "selected") {
+        const text = deps.commentary.createdMatch({
+          participant1: selection.match.participant1,
+          participant2: selection.match.participant2,
+          competition: selection.match.competition,
+          kickoff: formatKickoff(selection.match.startTime)
+        });
+        await send(text);
+        return;
+      }
+    }
+
     const selection = await deps.matchesService.createGroupMatch(deps.groupId, matchQueryFromRef(deps.intent.match) ?? deps.text);
     if (selection.kind === "none") {
       await send(deps.commentary.noMatch());
@@ -176,7 +219,7 @@ async function handleIntent(
         participant2: fixture.participant2,
         competition: fixture.competition,
         startTime: formatKickoff(fixture.startTime)
-      }))));
+      }))), "fixtures_list", { fixtures: rememberFixtures(selection.fixtures) });
       return;
     }
     const text = deps.commentary.createdMatch({
@@ -197,7 +240,9 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "get_available_matches") {
-    const fixtures = await deps.txline.getFixtures();
+    const fixtures = deps.repliedFixtures.length > 0
+      ? deps.repliedFixtures.map(normalizeRememberedFixture)
+      : await deps.txline.getFixtures();
     const filteredFixtures = filterAvailableFixtures(fixtures, {
       teamQuery: deps.intent.teamQuery,
       dateQuery: deps.intent.dateQuery,
@@ -205,53 +250,20 @@ async function handleIntent(
       match: deps.intent.match
     });
     const text = fixtureListText(filteredFixtures, noAvailableFixturesMessage(deps.intent.dateQuery ?? deps.text));
-    await send(text);
+    await send(text, "fixtures_list", { fixtures: rememberFixtures(filteredFixtures.slice(0, 20)) });
     return;
   }
 
   if (deps.intent.intent === "set_match_alert") {
-    const offsetMinutes = parseReminderOffsetMinutes(deps.text) ?? 60;
-    const fixtures = await deps.txline.getFixtures();
-    const filteredFixtures = filterAvailableFixtures(fixtures, {
-      teamQuery: deps.intent.teamQuery,
-      dateQuery: deps.intent.dateQuery,
-      userText: deps.text,
-      match: deps.intent.match
-    });
-    if (filteredFixtures.length === 0) {
-      await send("I couldn't find that upcoming fixture in TxLINE. Try the teams, tournament, or day again.");
-      return;
-    }
-    if (filteredFixtures.length > 1) {
-      await send(`I found a few possible fixtures. Which one should I remind you about?\n\n${fixtureListText(filteredFixtures.slice(0, 5), "")}`);
-      return;
-    }
-
-    const reminder = await deps.reminders.create({
-      groupId: deps.groupId,
-      userId: deps.userId,
-      requesterUsername: ctx.message?.from?.username,
-      requesterDisplayName: deps.userDisplayName,
-      fixture: filteredFixtures[0],
-      offsetMinutes
-    });
-
-    if (reminder.kind === "too_late") {
-      await send("That reminder time has already passed for this fixture. Try a shorter alert window or pick another match.");
-      return;
-    }
-    if (reminder.kind === "invalid_kickoff") {
-      await send("I found the fixture, but TxLINE did not return a usable kickoff time for it.");
-      return;
-    }
-
-    await send(`Done. I will remind you ${formatReminderOffset(offsetMinutes)} before ${filteredFixtures[0].participant1} vs ${filteredFixtures[0].participant2} (${formatKickoff(filteredFixtures[0].startTime)}).`);
+    await handleSetMatchAlert(ctx, deps, send);
     return;
   }
 
   if (deps.intent.intent === "get_match_status") {
     if (isFixtureScheduleQuestion(deps.text) && !isLiveStatusQuestion(deps.text)) {
-      const fixtures = await deps.txline.getFixtures();
+      const fixtures = deps.repliedFixtures.length > 0
+        ? deps.repliedFixtures.map(normalizeRememberedFixture)
+        : await deps.txline.getFixtures();
       const filteredFixtures = filterAvailableFixtures(fixtures, {
         teamQuery: deps.intent.teamQuery,
         dateQuery: deps.intent.dateQuery,
@@ -259,7 +271,7 @@ async function handleIntent(
         match: deps.intent.match
       });
       const text = fixtureListText(filteredFixtures, noAvailableFixturesMessage(deps.intent.dateQuery ?? deps.text));
-      await send(text);
+      await send(text, "fixtures_list", { fixtures: rememberFixtures(filteredFixtures.slice(0, 20)) });
       return;
     }
 
@@ -390,11 +402,91 @@ async function handleIntent(
   await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
 }
 
+async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: SendReply, pendingAction?: PendingAction | null) {
+  const timing = parseReminderTiming(deps.text);
+  const offsetMinutes = timing.kind === "before" ? timing.minutes : pendingAction?.offsetMinutes ?? 60;
+  const remindInMinutes = timing.kind === "in" ? timing.minutes : pendingAction?.remindInMinutes;
+  const nextPendingAction = { action: "set_match_alert" as const, offsetMinutes, remindInMinutes };
+  const repliedFixture = selectRepliedFixture(deps.repliedFixtures, deps.text);
+  if (repliedFixture.kind === "ambiguous") {
+    await send(
+      "I see a few fixtures in that message. Reply with the number too, like: alert me 1 hour before 2",
+      "alert_clarification",
+      { fixtures: deps.repliedFixtures, pendingAction: nextPendingAction }
+    );
+    return true;
+  }
+
+  const filteredFixtures = repliedFixture.kind === "selected"
+    ? [normalizeRememberedFixture(repliedFixture.fixture)]
+    : filterAvailableFixtures(await deps.txline.getFixtures(), {
+      teamQuery: deps.intent.teamQuery ?? freeformFixtureQuery(deps.text),
+      dateQuery: deps.intent.dateQuery,
+      userText: deps.text,
+      match: deps.intent.match
+    });
+
+  if (filteredFixtures.length === 0) {
+    await send(
+      "I couldn't find that upcoming fixture in TxLINE. Reply with the teams, tournament, or day and I'll keep the reminder request open.",
+      "alert_clarification",
+      { pendingAction: nextPendingAction }
+    );
+    return true;
+  }
+
+  if (filteredFixtures.length > 1) {
+    const fixtures = filteredFixtures.slice(0, 5);
+    await send(
+      `I found a few possible fixtures. Which one should I remind you about?\n\n${fixtureListText(fixtures, "")}`,
+      "fixtures_list",
+      { fixtures: rememberFixtures(fixtures), pendingAction: nextPendingAction }
+    );
+    return true;
+  }
+
+  const reminderOffsetMinutes = remindInMinutes
+    ? offsetMinutesFromRelativeReminder(filteredFixtures[0].startTime, remindInMinutes)
+    : offsetMinutes;
+  if (reminderOffsetMinutes <= 0) {
+    await send("That reminder would land after kickoff for this fixture, so I can't use it as a pre-game alert. Try a shorter time from now or pick another match.");
+    return true;
+  }
+
+  const reminder = await deps.reminders.create({
+    groupId: deps.groupId,
+    userId: deps.userId,
+    requesterUsername: ctx.message?.from?.username,
+    requesterDisplayName: deps.userDisplayName,
+    fixture: filteredFixtures[0],
+    offsetMinutes: reminderOffsetMinutes
+  });
+
+  if (reminder.kind === "too_late") {
+    await send(
+      "That reminder time has already passed for this fixture. Reply with a shorter alert window or another match.",
+      "alert_clarification",
+      { fixtures: rememberFixtures(filteredFixtures), pendingAction: { action: "set_match_alert" } }
+    );
+    return true;
+  }
+  if (reminder.kind === "invalid_kickoff") {
+    await send("I found the fixture, but TxLINE did not return a usable kickoff time for it.");
+    return true;
+  }
+
+  const timingText = remindInMinutes
+    ? `in about ${formatReminderOffset(remindInMinutes)}`
+    : `${formatReminderOffset(offsetMinutes)} before kickoff`;
+  await send(`Done. I will remind you ${timingText} for ${filteredFixtures[0].participant1} vs ${filteredFixtures[0].participant2}.`);
+  return true;
+}
+
 async function reply(ctx: Context, formatter: AiMessageFormatter, text: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
   return ctx.reply(withRequesterMention(ctx, await formatter.format(text, context)));
 }
 
-async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, formatter: AiMessageFormatter, text: string, messageType?: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
+async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, formatter: AiMessageFormatter, text: string, messageType?: string, context?: Parameters<AiMessageFormatter["format"]>[1], payload?: Record<string, unknown>) {
   const formatted = await formatter.format(text, context ?? { kind: messageType });
   const textWithMention = withRequesterMention(ctx, formatted);
   const message = await ctx.reply(textWithMention);
@@ -404,7 +496,7 @@ async function replyAndRemember(ctx: Context, groups: GroupService, groupId: str
       groupId,
       telegramMessageId: String(message.message_id),
       messageType,
-      payload: { text: textWithMention, draft: text }
+      payload: { ...payload, text: textWithMention, draft: text }
     });
   }
 }
@@ -501,6 +593,122 @@ function activeMatchClarification(matches: MatchOption[]) {
   return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: @touchline leaderboard for Brazil vs France`;
 }
 
+function rememberFixtures(fixtures: NormalizedFixture[]): RememberedFixture[] {
+  return fixtures.map((fixture) => ({
+    fixtureId: fixture.fixtureId,
+    competitionId: fixture.competitionId,
+    competition: fixture.competition,
+    participant1: fixture.participant1,
+    participant2: fixture.participant2,
+    participant1IsHome: fixture.participant1IsHome,
+    startTime: fixture.startTime,
+    raw: fixture.raw
+  }));
+}
+
+function fixturesFromBotMessagePayload(payload?: string | null): RememberedFixture[] {
+  if (!payload) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(payload) as { fixtures?: unknown };
+    if (!Array.isArray(parsed.fixtures)) {
+      return [];
+    }
+    return parsed.fixtures.filter(isRememberedFixture);
+  } catch {
+    return [];
+  }
+}
+
+function pendingActionFromBotMessagePayload(payload?: string | null): PendingAction | null {
+  if (!payload) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(payload) as { pendingAction?: unknown };
+    if (!parsed.pendingAction || typeof parsed.pendingAction !== "object") {
+      return null;
+    }
+    const pending = parsed.pendingAction as Partial<PendingAction>;
+    if (pending.action !== "set_match_alert") {
+      return null;
+    }
+    return {
+      action: "set_match_alert",
+      offsetMinutes: typeof pending.offsetMinutes === "number" ? pending.offsetMinutes : undefined,
+      remindInMinutes: typeof pending.remindInMinutes === "number" ? pending.remindInMinutes : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isRememberedFixture(value: unknown): value is RememberedFixture {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const fixture = value as Partial<RememberedFixture>;
+  return typeof fixture.fixtureId === "number"
+    && typeof fixture.participant1 === "string"
+    && typeof fixture.participant2 === "string"
+    && typeof fixture.participant1IsHome === "boolean"
+    && typeof fixture.startTime === "string";
+}
+
+function normalizeRememberedFixture(fixture: RememberedFixture): NormalizedFixture {
+  return {
+    fixtureId: fixture.fixtureId,
+    competitionId: fixture.competitionId,
+    competition: fixture.competition,
+    participant1: fixture.participant1,
+    participant2: fixture.participant2,
+    participant1IsHome: fixture.participant1IsHome,
+    startTime: fixture.startTime,
+    raw: fixture.raw ?? fixture
+  };
+}
+
+function selectRepliedFixture(fixtures: RememberedFixture[], text: string):
+  | { kind: "none" }
+  | { kind: "selected"; fixture: RememberedFixture }
+  | { kind: "ambiguous" } {
+  if (fixtures.length === 0) {
+    return { kind: "none" };
+  }
+  if (fixtures.length === 1) {
+    return { kind: "selected", fixture: fixtures[0] };
+  }
+
+  const index = requestedFixtureIndex(text);
+  if (index !== null && fixtures[index]) {
+    return { kind: "selected", fixture: fixtures[index] };
+  }
+  return { kind: "ambiguous" };
+}
+
+function requestedFixtureIndex(text: string) {
+  const normalized = text.toLowerCase();
+  const digit = normalized.match(/\b([1-9]|1\d|20)\b/);
+  if (digit) {
+    return Number(digit[1]) - 1;
+  }
+  const ordinals: Record<string, number> = {
+    first: 0,
+    second: 1,
+    third: 2,
+    fourth: 3,
+    fifth: 4,
+    sixth: 5,
+    seventh: 6,
+    eighth: 7,
+    ninth: 8,
+    tenth: 9
+  };
+  const word = Object.keys(ordinals).find((ordinal) => new RegExp(`\\b${ordinal}\\b`).test(normalized));
+  return word ? ordinals[word] : null;
+}
+
 function filterAvailableFixtures(
   fixtures: NormalizedFixture[],
   input: { teamQuery?: string | null; dateQuery?: string | null; userText: string; match?: MatchRef }
@@ -536,7 +744,7 @@ function queryDuplicatesMatchRef(query: string, match?: MatchRef) {
 function fixtureDateRange(query: string) {
   const normalized = query.toLowerCase();
   const now = new Date();
-  if (/\btoday\b/.test(normalized)) {
+  if (/\b(today|tonight)\b/.test(normalized)) {
     return utcDayRange(now);
   }
   if (/\btomorrow\b/.test(normalized)) {
@@ -630,6 +838,16 @@ function fixtureMatchesText(fixture: NormalizedFixture, text: string) {
   return haystack.includes(needle) || needle.split(" ").some((part) => part.length > 2 && haystack.includes(part));
 }
 
+function freeformFixtureQuery(text: string) {
+  const normalized = normalizeTeamName(text);
+  if (!normalized || /^\d+$/.test(normalized) || fixtureDateRange(text)) {
+    return null;
+  }
+  const genericWords = new Set(["this", "that", "game", "match", "fixture", "one", "before", "remind", "alert", "me"]);
+  const words = normalized.split(" ").filter((word) => !genericWords.has(word));
+  return words.length > 0 ? words.join(" ") : null;
+}
+
 function fixtureListText(fixtures: NormalizedFixture[], fallback: string) {
   return fixtures.slice(0, 20).map((fixture, index) => {
     const details = [fixture.competition, formatKickoff(fixture.startTime)].filter(Boolean).join(", ");
@@ -645,23 +863,50 @@ function isLiveStatusQuestion(text: string) {
   return /\b(e?score|live|now|current(?:ly)?|status|result|winning|who'?s\s+up|what'?s\s+happening|full\s*time|half\s*time|ft|ht)\b/i.test(text);
 }
 
-function parseReminderOffsetMinutes(text: string) {
+function parseReminderTiming(text: string): { kind: "before" | "in"; minutes: number } | { kind: "default" } {
   const normalized = text.toLowerCase();
-  if (/\bhalf\s+(an?\s+)?hour\b/.test(normalized)) {
+  const inMatch = normalized.match(/\bin\s+(.+?)(?:\s+(?:about|for|before)\b|$)/);
+  if (inMatch) {
+    const minutes = parseReminderDurationMinutes(inMatch[1]);
+    if (minutes) {
+      return { kind: "in", minutes };
+    }
+  }
+  const beforeMatch = normalized.match(/(.+?)\s+before\b/);
+  if (beforeMatch) {
+    const minutes = parseReminderDurationMinutes(beforeMatch[1]);
+    if (minutes) {
+      return { kind: "before", minutes };
+    }
+  }
+  const minutes = parseReminderDurationMinutes(normalized);
+  return minutes ? { kind: "before", minutes } : { kind: "default" };
+}
+
+function parseReminderDurationMinutes(text: string) {
+  if (/\bhalf\s+(an?\s+)?hour\b/.test(text)) {
     return 30;
   }
-  const hourMatch = normalized.match(/\b(\d+(?:\.\d+)?)\s*(hours?|hrs?|h)\b/);
+  const hourMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(hours?|hrs?|h)\b/);
   if (hourMatch) {
     return Math.round(Number(hourMatch[1]) * 60);
   }
-  const minuteMatch = normalized.match(/\b(\d+)\s*(minutes?|mins?|m)\b/);
+  const minuteMatch = text.match(/\b(\d+)\s*(minutes?|mins?|m)\b/);
   if (minuteMatch) {
     return Number(minuteMatch[1]);
   }
-  if (/\ban?\s+hour\b/.test(normalized)) {
+  if (/\ban?\s+hour\b/.test(text)) {
     return 60;
   }
   return null;
+}
+
+function offsetMinutesFromRelativeReminder(startTime: string, remindInMinutes: number) {
+  const kickoff = new Date(startTime).getTime();
+  if (!Number.isFinite(kickoff)) {
+    return 0;
+  }
+  return Math.ceil((kickoff - (Date.now() + remindInMinutes * 60 * 1000)) / 60_000);
 }
 
 function formatReminderOffset(minutes: number) {
@@ -674,7 +919,7 @@ function formatReminderOffset(minutes: number) {
 
 function noAvailableFixturesMessage(query: string) {
   const normalized = query.toLowerCase();
-  if (/\btoday\b/.test(normalized)) {
+  if (/\b(today|tonight)\b/.test(normalized)) {
     return "No fixtures returned by TxLINE for today.";
   }
   if (/\bnext\s+week\b/.test(normalized)) {

@@ -41,6 +41,8 @@ export function buildIntentPrompt(context: IntentContext): string {
     "- For smalltalkResponse, do not claim live match facts, odds, scores, fixtures, proof, or bot capabilities beyond Touchline.",
     "- Prefer an actionable app intent over smalltalk when the message asks Touchline to do something.",
     "- A reply to a bot prompt may be a prediction even if terse.",
+    "- If the user replies to a bot clarification asking for teams, tournament, date, or a fixture number, infer they are continuing the previous bot request.",
+    "- If the replied bot message is asking which fixture to remind them about, short replies like '2', 'second one', or 'Spain vs Belgium' are part of set_match_alert.",
     "- The message has already had bot mentions removed when possible.",
     "",
     `Message: ${context.text}`,
@@ -48,6 +50,7 @@ export function buildIntentPrompt(context: IntentContext): string {
     `Predictions open: ${context.predictionsOpen}`,
     `Active match: ${context.activeMatch ? `${context.activeMatch.participant1} vs ${context.activeMatch.participant2}` : "none"}`,
     `Active matches: ${context.activeMatches?.length ? context.activeMatches.map((match) => `${match.participant1} vs ${match.participant2}`).join("; ") : "none"}`,
+    `Replied bot message: ${context.repliedBotMessageText ?? "none"}`,
     `Recent bot prompt: ${context.latestBotPrompt ?? "none"}`,
     "",
     "Return one JSON object only."

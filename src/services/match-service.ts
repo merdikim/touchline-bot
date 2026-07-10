@@ -40,6 +40,10 @@ export class MatchService {
     return row ?? null;
   }
 
+  async createGroupMatchFromFixture(groupId: string, fixture: NormalizedFixture): Promise<MatchSelection> {
+    return this.storeSelection(groupId, fixture);
+  }
+
   private async storeSelection(groupId: string, fixture: NormalizedFixture): Promise<MatchSelection> {
     const matchId = `txline_match_${fixture.fixtureId}`;
     await this.db.insert(matches).values({

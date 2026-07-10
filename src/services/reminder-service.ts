@@ -94,6 +94,5 @@ export class ReminderService {
 
 function reminderMessage(reminder: typeof matchReminders.$inferSelect) {
   const mention = reminder.requesterUsername ? `@${reminder.requesterUsername}` : reminder.requesterDisplayName ?? "Reminder";
-  const details = [reminder.competition, formatKickoff(reminder.startTime)].filter(Boolean).join(", ");
-  return `${mention} reminder: ${reminder.participant1} vs ${reminder.participant2}${details ? ` (${details})` : ""} kicks off in about ${reminder.offsetMinutes} minute${reminder.offsetMinutes === 1 ? "" : "s"}.`;
+  return `${mention} reminder: ${reminder.participant1} vs ${reminder.participant2} kicks off at ${formatKickoff(reminder.startTime)}.`;
 }

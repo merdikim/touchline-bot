@@ -8,6 +8,7 @@ export type IntentContext = {
   replyToBot: boolean;
   predictionsOpen: boolean;
   latestBotPrompt?: string | null;
+  repliedBotMessageText?: string | null;
   activeMatch?: {
     participant1: string;
     participant2: string;

@@ -56,6 +56,15 @@ export class GroupService {
     return input;
   }
 
+  async loadBotMessage(input: { groupId: string; telegramMessageId: string }) {
+    const [message] = await this.db
+      .select()
+      .from(botMessages)
+      .where(and(eq(botMessages.groupId, input.groupId), eq(botMessages.telegramMessageId, input.telegramMessageId)))
+      .limit(1);
+    return message ?? null;
+  }
+
   async countBotMessages(input: { groupId: string; messageType: string }) {
     const [row] = await this.db
       .select({ total: count() })
