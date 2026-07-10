@@ -5,6 +5,7 @@ import type { TxLineClient } from "../txline/client";
 import type { MatchPollJob, PollMatchJob, WorkerEnv } from "../env";
 import { newId } from "../utils/ids";
 import { formatKickoff } from "../utils/dates";
+import { AiMessageFormatter } from "../ai/message-formatter";
 import { CommentaryService } from "./commentary-service";
 import { LeaderboardService } from "./leaderboard-service";
 import { TelegramMessageSender } from "../bot/message-sender";
@@ -15,10 +16,12 @@ export class MatchWatcherService {
   private readonly commentary = new CommentaryService();
   private readonly leaderboard: LeaderboardService;
   private readonly sender: TelegramMessageSender;
+  private readonly formatter: AiMessageFormatter;
 
   constructor(private readonly db: Db, private readonly txline: TxLineClient, env: WorkerEnv) {
     this.leaderboard = new LeaderboardService(db);
     this.sender = new TelegramMessageSender(env);
+    this.formatter = new AiMessageFormatter(env);
   }
 
   async enqueueActiveMatches(queue: Queue<MatchPollJob>) {
@@ -70,11 +73,11 @@ export class MatchWatcherService {
         verified: next.confirmed ? 1 : 0
       });
       await this.db.update(groupMatches).set({ predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
-      await this.sender.sendMessage(groupId, this.commentary.matchStarted({
+      await this.sendHumanized(groupId, this.commentary.matchStarted({
         participant1: row.match.participant1,
         participant2: row.match.participant2,
         state: next.displayState ?? next.gameState
-      }));
+      }), { kind: "match_started" });
     }
 
     const entries = await this.leaderboard.calculate(job.groupMatchId, job.matchId, row.groupMatch.baselineOddsSummary);
@@ -87,7 +90,7 @@ export class MatchWatcherService {
         txlineReference: next.seq ? String(next.seq) : null,
         verified: next.confirmed ? 1 : 0
       });
-      await this.sender.sendMessage(groupId, this.commentary.matchChange({
+      await this.sendHumanized(groupId, this.commentary.matchChange({
         participant1: row.match.participant1,
         participant2: row.match.participant2,
         previous: previousState,
@@ -98,7 +101,7 @@ export class MatchWatcherService {
           confirmed: next.confirmed
         },
         final
-      }));
+      }), { kind: final ? "full_time" : "score_change" });
     }
     if (final) {
       const winnerMessage = this.commentary.matchWinner({
@@ -108,18 +111,18 @@ export class MatchWatcherService {
         participant2Score: next.participant2Score
       });
       if (winnerMessage) {
-        await this.sender.sendMessage(groupId, winnerMessage);
+        await this.sendHumanized(groupId, winnerMessage, { kind: "match_winner" });
       }
       const perfectEntries = entries.filter((entry) => entry.perfect);
       if (perfectEntries.length === 1) {
-        await this.sender.sendMessage(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { parseMode: "HTML" });
+        await this.sendHumanized(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { kind: "perfect_pick_winner", parseMode: "HTML" });
       }
       if (perfectEntries.length === 0) {
         await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: row.groupMatch.groupId }, { delaySeconds: 300 });
       }
     }
     if (changedScore || final) {
-      await this.sender.sendMessage(groupId, this.commentary.leaderboardUpdate(entries, final));
+      await this.sendHumanized(groupId, this.commentary.leaderboardUpdate(entries, final), { kind: final ? "final_leaderboard" : "leaderboard_update" });
     }
 
     if (final) {
@@ -135,7 +138,12 @@ export class MatchWatcherService {
       competition: fixture.competition ?? null,
       kickoff: formatKickoff(fixture.startTime)
     })));
-    await this.sender.sendMessage(groupId.replace("telegram_group_", ""), text);
+    await this.sendHumanized(groupId.replace("telegram_group_", ""), text, { kind: "no_perfect_pick_follow_up" });
+  }
+
+  private async sendHumanized(chatId: string, draft: string, options: { kind: string; parseMode?: "HTML" }) {
+    const text = await this.formatter.format(draft, { kind: options.kind, parseMode: options.parseMode });
+    await this.sender.sendMessage(chatId, text, { parseMode: options.parseMode });
   }
 
   private async upsertState(matchId: string, score: { gameState?: string; displayState?: string; participant1Score: number; participant2Score: number; seq?: number; timestamp?: number; confirmed?: boolean; raw: unknown }) {

@@ -4,6 +4,7 @@ import type { createDb } from "../db/client";
 import { groupMatches, matches, matchStates, oddsSnapshots } from "../db/schema";
 import type { WorkerEnv } from "../env";
 import { IntentRouter } from "../ai/intent-router";
+import { AiMessageFormatter } from "../ai/message-formatter";
 import type { MatchRef } from "../ai/intent-schema";
 import { TxLineClient } from "../txline/client";
 import type { NormalizedFixture } from "../txline/types";
@@ -37,6 +38,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   const commentary = new CommentaryService();
   const verification = new VerificationService(db);
   const router = new IntentRouter(env);
+  const formatter = new AiMessageFormatter(env);
 
   bot.on("my_chat_member", async (ctx) => {
     const update = ctx.myChatMember;
@@ -46,7 +48,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
     }
 
     const group = await groups.upsertTelegramGroup({ telegramGroupId: String(chat.id), title: "title" in chat ? chat.title : null });
-    await replyAndRemember(ctx, groups, group.id, commentary.groupIntro(), "group_intro");
+    await replyAndRemember(ctx, groups, group.id, formatter, commentary.groupIntro(), "group_intro");
   });
 
   bot.on("message:text", async (ctx) => {
@@ -54,7 +56,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
     const chat = message.chat;
 
     if (chat.type === "private") {
-      await ctx.reply("Invite me into a group and mention me to get started!");
+      await reply(ctx, formatter, "Invite me into a group and mention me to get started!", { kind: "private_intro" });
       return;
     }
 
@@ -102,11 +104,12 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
         predictions,
         leaderboard,
         commentary,
-        verification
+        verification,
+        formatter
       });
     } catch (error) {
       log("error", "telegram intent failed", { error: error instanceof Error ? error.message : "Unknown error", intent: intent.intent });
-      await ctx.reply("I hit a snag reading the match data. Try me again in a moment.");
+      await reply(ctx, formatter, "I hit a snag reading the match data. Try me again in a moment.", { kind: "error", userMessage: routedText });
     }
   });
 
@@ -143,18 +146,28 @@ async function handleIntent(
     leaderboard: LeaderboardService;
     commentary: CommentaryService;
     verification: VerificationService;
+    formatter: AiMessageFormatter;
   }
 ) {
   const activeGroupMatches = deps.context.activeGroupMatches;
+  const send = (text: string, messageType?: string) => replyAndRemember(
+    ctx,
+    deps.groups,
+    deps.groupId,
+    deps.formatter,
+    text,
+    messageType,
+    { kind: messageType ?? deps.intent.intent, userMessage: deps.text }
+  );
 
   if (deps.intent.intent === "create_group_match") {
     const selection = await deps.matchesService.createGroupMatch(deps.groupId, matchQueryFromRef(deps.intent.match) ?? deps.text);
     if (selection.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.noMatch());
+      await send(deps.commentary.noMatch());
       return;
     }
     if (selection.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.ambiguous(selection.fixtures.map((fixture) => ({
+      await send(deps.commentary.ambiguous(selection.fixtures.map((fixture) => ({
         participant1: fixture.participant1,
         participant2: fixture.participant2,
         competition: fixture.competition,
@@ -168,14 +181,14 @@ async function handleIntent(
       competition: selection.match.competition,
       kickoff: formatKickoff(selection.match.startTime)
     });
-    await replyAndRemember(ctx, deps.groups, deps.groupId, text);
+    await send(text);
     return;
   }
 
   if (deps.intent.intent === "run_demo") {
     const match = await createDemoMatch(deps.db, deps.groupId);
     const text = deps.commentary.createdMatch({ participant1: match.participant1, participant2: match.participant2, competition: match.competition, kickoff: formatKickoff(match.startTime) });
-    await replyAndRemember(ctx, deps.groups, deps.groupId, `${text}\n\nDemo mode is ready, so judges can submit picks right now.`);
+    await send(`${text}\n\nDemo mode is ready, so judges can submit picks right now.`);
     return;
   }
 
@@ -185,18 +198,18 @@ async function handleIntent(
       const details = [fixture.competition, formatKickoff(fixture.startTime)].filter(Boolean).join(", ");
       return `${index + 1}. ${fixture.participant1} vs ${fixture.participant2}${details ? ` (${details})` : ""}`;
     }).join("\n") || "No fixtures returned by TxLINE right now.";
-    await replyAndRemember(ctx, deps.groups, deps.groupId, text);
+    await send(text);
     return;
   }
 
   if (deps.intent.intent === "get_match_status") {
     const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
     if (target.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : "Mention me with a fixture first, like: @touchline what's the score for Brazil vs France");
+      await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : "Mention me with a fixture first, like: @touchline what's the score for Brazil vs France");
       return;
     }
     if (target.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.ambiguous(target.fixtures.map((fixture) => ({
+      await send(deps.commentary.ambiguous(target.fixtures.map((fixture) => ({
         participant1: fixture.participant1,
         participant2: fixture.participant2,
         competition: fixture.competition,
@@ -209,7 +222,7 @@ async function handleIntent(
     if (target.matchId) {
       await upsertScoreState(deps.db, target.matchId, score);
     }
-    await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.status({
+    await send(deps.commentary.status({
       participant1: target.participant1,
       participant2: target.participant2,
       competition: target.competition,
@@ -222,32 +235,32 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "unclear") {
-    await replyAndRemember(ctx, deps.groups, deps.groupId, deps.intent.clarificationQuestion ?? "Do you want a demo, a leaderboard, a prediction, or the score?");
+    await send(deps.intent.clarificationQuestion ?? "Do you want a demo, a leaderboard, a prediction, or the score?");
     return;
   }
 
   if (deps.intent.intent === "smalltalk") {
     const smalltalkCount = await deps.groups.countBotMessages({ groupId: deps.groupId, messageType: "smalltalk" });
     if (smalltalkCount >= 2) {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, gamesOnlyResponse(), "smalltalk_limit");
+      await send(gamesOnlyResponse(), "smalltalk_limit");
       return;
     }
-    await replyAndRemember(ctx, deps.groups, deps.groupId, conciseSmalltalkResponse(deps.intent.smalltalkResponse), "smalltalk");
+    await send(conciseSmalltalkResponse(deps.intent.smalltalkResponse), "smalltalk");
     return;
   }
 
   if (deps.intent.intent === "submit_prediction") {
     if (!deps.userId) {
-      await ctx.reply("I need a Telegram user to lock that prediction.");
+      await reply(ctx, deps.formatter, "I need a Telegram user to lock that prediction.", { kind: "missing_user", userMessage: deps.text });
       return;
     }
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
       return;
     }
     if (target.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches));
       return;
     }
     const result = await deps.predictions.submit({
@@ -259,33 +272,33 @@ async function handleIntent(
     const text = result.ok
       ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
       : result.reason;
-    await replyAndRemember(ctx, deps.groups, deps.groupId, text);
+    await send(text);
     return;
   }
 
   if (deps.intent.intent === "get_leaderboard") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
       return;
     }
     if (target.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches));
       return;
     }
     const entries = await deps.leaderboard.calculate(target.groupMatch.id, target.match.id, target.groupMatch.baselineOddsSummary);
-    await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.leaderboard(entries));
+    await send(deps.commentary.leaderboard(entries));
     return;
   }
 
   if (deps.intent.intent === "get_odds_commentary") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
       return;
     }
     if (target.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches));
       return;
     }
     const odds = await deps.txline.getOddsSnapshot(target.match.txlineFixtureId, undefined, target.match.participant1, target.match.participant2);
@@ -296,36 +309,41 @@ async function handleIntent(
       summary: JSON.stringify(odds),
       rawOddsSnapshot: JSON.stringify(odds.raw)
     });
-    await replyAndRemember(ctx, deps.groups, deps.groupId, deps.commentary.odds(odds));
+    await send(deps.commentary.odds(odds));
     return;
   }
 
   if (deps.intent.intent === "get_verification") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
       return;
     }
     if (target.kind === "ambiguous") {
-      await replyAndRemember(ctx, deps.groups, deps.groupId, activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches));
       return;
     }
-    await replyAndRemember(ctx, deps.groups, deps.groupId, await deps.verification.summarize(target.match.id));
+    await send(await deps.verification.summarize(target.match.id));
     return;
   }
 
-  await replyAndRemember(ctx, deps.groups, deps.groupId, "Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+  await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
 }
 
-async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, text: string, messageType?: string) {
-  const message = await ctx.reply(text);
-  await groups.setLatestBotPrompt(groupId, text);
+async function reply(ctx: Context, formatter: AiMessageFormatter, text: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
+  return ctx.reply(await formatter.format(text, context));
+}
+
+async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, formatter: AiMessageFormatter, text: string, messageType?: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
+  const formatted = await formatter.format(text, context ?? { kind: messageType });
+  const message = await ctx.reply(formatted);
+  await groups.setLatestBotPrompt(groupId, formatted);
   if (messageType) {
     await groups.rememberBotMessage({
       groupId,
       telegramMessageId: String(message.message_id),
       messageType,
-      payload: { text }
+      payload: { text: formatted, draft: text }
     });
   }
 }
