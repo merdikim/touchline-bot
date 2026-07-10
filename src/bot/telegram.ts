@@ -194,15 +194,31 @@ async function handleIntent(
 
   if (deps.intent.intent === "get_available_matches") {
     const fixtures = await deps.txline.getFixtures();
-    const text = fixtures.slice(0, 20).map((fixture, index) => {
-      const details = [fixture.competition, formatKickoff(fixture.startTime)].filter(Boolean).join(", ");
-      return `${index + 1}. ${fixture.participant1} vs ${fixture.participant2}${details ? ` (${details})` : ""}`;
-    }).join("\n") || "No fixtures returned by TxLINE right now.";
+    const filteredFixtures = filterAvailableFixtures(fixtures, {
+      teamQuery: deps.intent.teamQuery,
+      dateQuery: deps.intent.dateQuery,
+      userText: deps.text,
+      match: deps.intent.match
+    });
+    const text = fixtureListText(filteredFixtures, noAvailableFixturesMessage(deps.intent.dateQuery ?? deps.text));
     await send(text);
     return;
   }
 
   if (deps.intent.intent === "get_match_status") {
+    if (isFixtureScheduleQuestion(deps.text) && !isLiveStatusQuestion(deps.text)) {
+      const fixtures = await deps.txline.getFixtures();
+      const filteredFixtures = filterAvailableFixtures(fixtures, {
+        teamQuery: deps.intent.teamQuery,
+        dateQuery: deps.intent.dateQuery,
+        userText: deps.text,
+        match: deps.intent.match
+      });
+      const text = fixtureListText(filteredFixtures, noAvailableFixturesMessage(deps.intent.dateQuery ?? deps.text));
+      await send(text);
+      return;
+    }
+
     const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
     if (target.kind === "none") {
       await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : "Mention me with a fixture first, like: @touchline what's the score for Brazil vs France");
@@ -421,6 +437,170 @@ function activeMatchClarification(matches: MatchOption[]) {
     return `${index + 1}. ${match.participant1} vs ${match.participant2}${details ? ` (${details})` : ""}`;
   }).join("\n");
   return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: @touchline leaderboard for Brazil vs France`;
+}
+
+function filterAvailableFixtures(
+  fixtures: NormalizedFixture[],
+  input: { teamQuery?: string | null; dateQuery?: string | null; userText: string; match?: MatchRef }
+) {
+  const dateRange = fixtureDateRange(input.dateQuery ?? input.userText);
+  const teamQuery = input.teamQuery?.trim();
+  const textQuery = teamQuery && !queryDuplicatesMatchRef(teamQuery, input.match) ? teamQuery : null;
+  return fixtures.filter((fixture) => {
+    if (dateRange && !fixtureStartsInRange(fixture.startTime, dateRange)) {
+      return false;
+    }
+    if (input.match && !matchRefMatchesFixture(input.match, fixture)) {
+      return false;
+    }
+    if (textQuery && !fixtureMatchesText(fixture, textQuery)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function queryDuplicatesMatchRef(query: string, match?: MatchRef) {
+  const teams = [match?.team1, match?.team2].filter((team): team is string => Boolean(team)).map(normalizeTeamName);
+  if (teams.length === 0) {
+    return false;
+  }
+  const normalized = normalizeTeamName(query);
+  return teams.length === 1
+    ? normalized === teams[0]
+    : normalized === `${teams[0]} ${teams[1]}` || normalized === `${teams[1]} ${teams[0]}`;
+}
+
+function fixtureDateRange(query: string) {
+  const normalized = query.toLowerCase();
+  const now = new Date();
+  if (/\btoday\b/.test(normalized)) {
+    return utcDayRange(now);
+  }
+  if (/\btomorrow\b/.test(normalized)) {
+    const tomorrow = new Date(now);
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    return utcDayRange(tomorrow);
+  }
+  if (/\bnext\s+week\b/.test(normalized)) {
+    return utcNextWeekRange(now);
+  }
+  if (/\b(this\s+week|week)\b/.test(normalized)) {
+    return utcThisWeekRange(now);
+  }
+  if (/\bweekend\b/.test(normalized)) {
+    return utcWeekendRange(now);
+  }
+  if (/\b(this\s+month|month)\b/.test(normalized)) {
+    return utcThisMonthRange(now);
+  }
+  const weekday = weekdayFromQuery(normalized);
+  if (weekday !== null) {
+    return utcWeekdayRange(now, weekday, /\bnext\s+(sun|mon|tue|wed|thu|fri|sat)/.test(normalized));
+  }
+  return null;
+}
+
+function utcDayRange(date: Date) {
+  const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return { start, end: start + 24 * 60 * 60 * 1000 };
+}
+
+function utcThisWeekRange(date: Date) {
+  const todayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return { start: todayStart, end: todayStart + 7 * 24 * 60 * 60 * 1000 };
+}
+
+function utcNextWeekRange(date: Date) {
+  const todayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const nextWeekStart = todayStart + 7 * 24 * 60 * 60 * 1000;
+  return { start: nextWeekStart, end: nextWeekStart + 7 * 24 * 60 * 60 * 1000 };
+}
+
+function utcWeekendRange(date: Date) {
+  const todayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const daysUntilSaturday = (6 - date.getUTCDay() + 7) % 7;
+  const start = todayStart + daysUntilSaturday * 24 * 60 * 60 * 1000;
+  return { start, end: start + 2 * 24 * 60 * 60 * 1000 };
+}
+
+function utcThisMonthRange(date: Date) {
+  const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const end = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+  return { start, end };
+}
+
+function utcWeekdayRange(date: Date, weekday: number, forceNext = false) {
+  const todayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  let daysUntil = (weekday - date.getUTCDay() + 7) % 7;
+  if (forceNext && daysUntil === 0) {
+    daysUntil = 7;
+  }
+  const start = todayStart + daysUntil * 24 * 60 * 60 * 1000;
+  return { start, end: start + 24 * 60 * 60 * 1000 };
+}
+
+function weekdayFromQuery(query: string) {
+  const weekdays = [
+    ["sunday", "sun"],
+    ["monday", "mon"],
+    ["tuesday", "tue", "tues"],
+    ["wednesday", "wed"],
+    ["thursday", "thu", "thur", "thurs"],
+    ["friday", "fri"],
+    ["saturday", "sat"]
+  ];
+  const match = weekdays.find((names) => names.some((name) => new RegExp(`\\b${name}\\b`).test(query)));
+  return match ? weekdays.indexOf(match) : null;
+}
+
+function fixtureStartsInRange(startTime: string, range: { start: number; end: number }) {
+  const kickoff = new Date(startTime).getTime();
+  return Number.isFinite(kickoff) && kickoff >= range.start && kickoff < range.end;
+}
+
+function fixtureMatchesText(fixture: NormalizedFixture, text: string) {
+  const needle = normalizeTeamName(text);
+  if (!needle) {
+    return true;
+  }
+  const haystack = [fixture.participant1, fixture.participant2, fixture.competition ?? ""].map(normalizeTeamName).join(" ");
+  return haystack.includes(needle) || needle.split(" ").some((part) => part.length > 2 && haystack.includes(part));
+}
+
+function fixtureListText(fixtures: NormalizedFixture[], fallback: string) {
+  return fixtures.slice(0, 20).map((fixture, index) => {
+    const details = [fixture.competition, formatKickoff(fixture.startTime)].filter(Boolean).join(", ");
+    return `${index + 1}. ${fixture.participant1} vs ${fixture.participant2}${details ? ` (${details})` : ""}`;
+  }).join("\n") || fallback;
+}
+
+function isFixtureScheduleQuestion(text: string) {
+  return /\b(when|what\s+time|kick\s*off|kickoff|fixture|fixtures|schedule|games?|matches?|play(?:ing)?)\b/i.test(text);
+}
+
+function isLiveStatusQuestion(text: string) {
+  return /\b(e?score|live|now|current(?:ly)?|status|result|winning|who'?s\s+up|what'?s\s+happening|full\s*time|half\s*time|ft|ht)\b/i.test(text);
+}
+
+function noAvailableFixturesMessage(query: string) {
+  const normalized = query.toLowerCase();
+  if (/\btoday\b/.test(normalized)) {
+    return "No fixtures returned by TxLINE for today.";
+  }
+  if (/\bnext\s+week\b/.test(normalized)) {
+    return "No fixtures returned by TxLINE for next week.";
+  }
+  if (/\b(this\s+week|week)\b/.test(normalized)) {
+    return "No fixtures returned by TxLINE for this week.";
+  }
+  if (/\bweekend\b/.test(normalized)) {
+    return "No fixtures returned by TxLINE for this weekend.";
+  }
+  if (/\b(this\s+month|month)\b/.test(normalized)) {
+    return "No fixtures returned by TxLINE for this month.";
+  }
+  return "No fixtures returned by TxLINE right now.";
 }
 
 function conciseSmalltalkResponse(response?: string | null) {
