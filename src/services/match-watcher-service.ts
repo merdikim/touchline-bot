@@ -2,12 +2,14 @@ import { and, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
 import { groupMatches, matchEvents, matches, matchStates } from "../db/schema";
 import type { TxLineClient } from "../txline/client";
+import type { NormalizedScoreState } from "../txline/types";
 import type { MatchPollJob, PollMatchJob, WorkerEnv } from "../env";
 import { newId } from "../utils/ids";
 import { formatKickoff } from "../utils/dates";
 import { CommentaryService } from "./commentary-service";
 import { LeaderboardService } from "./leaderboard-service";
 import { TelegramMessageSender } from "../bot/message-sender";
+import { log } from "../utils/logger";
 
 type Db = ReturnType<typeof createDb>;
 
@@ -48,12 +50,16 @@ export class MatchWatcherService {
     }
 
     const previous = await this.db.select().from(matchStates).where(eq(matchStates.matchId, job.matchId)).limit(1);
-    const next = await this.txline.getScoreSnapshot(job.txlineFixtureId);
+    const next = isDemoMatch(row.match)
+      ? demoScoreSnapshot(row.match.txlineFixtureId, row.match.startTime)
+      : await this.txline.getScoreSnapshot(job.txlineFixtureId);
     await this.upsertState(job.matchId, next);
 
     const previousState = previous[0] ?? null;
-    const changedScore = Boolean(previousState && (previousState.participant1Score !== next.participant1Score || previousState.participant2Score !== next.participant2Score));
-    const final = /full|final|ft/i.test(next.gameState ?? "");
+    const changedScore = previousState
+      ? previousState.participant1Score !== next.participant1Score || previousState.participant2Score !== next.participant2Score
+      : next.participant1Score !== 0 || next.participant2Score !== 0;
+    const final = isFinalState(next);
     const started = row.groupMatch.predictionsOpen === 1 && !final && isMatchStarted(row.match.startTime, next);
     if (!started && !changedScore && !final) {
       return;
@@ -70,7 +76,7 @@ export class MatchWatcherService {
         verified: next.confirmed ? 1 : 0
       });
       await this.db.update(groupMatches).set({ predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
-      await this.sendHumanized(groupId, this.commentary.matchStarted({
+      await this.safeSendHumanized(groupId, this.commentary.matchStarted({
         participant1: row.match.participant1,
         participant2: row.match.participant2,
         state: next.displayState ?? next.gameState
@@ -87,7 +93,7 @@ export class MatchWatcherService {
         txlineReference: next.seq ? String(next.seq) : null,
         verified: next.confirmed ? 1 : 0
       });
-      await this.sendHumanized(groupId, this.commentary.matchChange({
+      await this.safeSendHumanized(groupId, this.commentary.matchChange({
         participant1: row.match.participant1,
         participant2: row.match.participant2,
         previous: previousState,
@@ -108,18 +114,18 @@ export class MatchWatcherService {
         participant2Score: next.participant2Score
       });
       if (winnerMessage) {
-        await this.sendHumanized(groupId, winnerMessage, { kind: "match_winner" });
+        await this.safeSendHumanized(groupId, winnerMessage, { kind: "match_winner" });
       }
       const perfectEntries = entries.filter((entry) => entry.perfect);
       if (perfectEntries.length === 1) {
-        await this.sendHumanized(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { kind: "perfect_pick_winner", parseMode: "HTML" });
+        await this.safeSendHumanized(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { kind: "perfect_pick_winner", parseMode: "HTML" });
       }
       if (perfectEntries.length === 0) {
         await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: row.groupMatch.groupId }, { delaySeconds: 300 });
       }
     }
     if (changedScore || final) {
-      await this.sendHumanized(groupId, this.commentary.leaderboardUpdate(entries, final), { kind: final ? "final_leaderboard" : "leaderboard_update" });
+      await this.safeSendHumanized(groupId, this.commentary.leaderboardUpdate(entries, final), { kind: final ? "final_leaderboard" : "leaderboard_update" });
     }
 
     if (final) {
@@ -135,7 +141,7 @@ export class MatchWatcherService {
       competition: fixture.competition ?? null,
       kickoff: formatKickoff(fixture.startTime)
     })));
-    await this.sendHumanized(groupId.replace("telegram_group_", ""), text, { kind: "no_perfect_pick_follow_up" });
+    await this.safeSendHumanized(groupId.replace("telegram_group_", ""), text, { kind: "no_perfect_pick_follow_up" });
   }
 
   private async sendHumanized(chatId: string, draft: string, options: { kind: string; parseMode?: "HTML" }) {
@@ -143,6 +149,18 @@ export class MatchWatcherService {
       parseMode: options.parseMode,
       formatContext: { kind: options.kind }
     });
+  }
+
+  private async safeSendHumanized(chatId: string, draft: string, options: { kind: string; parseMode?: "HTML" }) {
+    try {
+      await this.sendHumanized(chatId, draft, options);
+    } catch (error) {
+      log("error", "telegram match update send failed", {
+        chatId,
+        kind: options.kind,
+        error: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
   }
 
   private async upsertState(matchId: string, score: { gameState?: string; displayState?: string; participant1Score: number; participant2Score: number; seq?: number; timestamp?: number; confirmed?: boolean; raw: unknown }) {
@@ -182,4 +200,84 @@ function isMatchStarted(startTime: string, score: { gameState?: string; displayS
 
   const kickoff = new Date(startTime).getTime();
   return Number.isFinite(kickoff) && Date.now() >= kickoff;
+}
+
+function isFinalState(score: { gameState?: string; displayState?: string }) {
+  const state = `${score.gameState ?? ""} ${score.displayState ?? ""}`.toLowerCase();
+  return /\b(full|final|ft|full[_ -]?time|ended|complete|completed)\b/.test(state);
+}
+
+function isDemoMatch(match: typeof matches.$inferSelect) {
+  return match.id === "demo_match_brazil_france" || match.txlineFixtureId === 9000001;
+}
+
+function demoScoreSnapshot(fixtureId: number, startTime: string): NormalizedScoreState {
+  const kickoff = new Date(startTime).getTime();
+  const elapsedMs = Date.now() - kickoff;
+  if (!Number.isFinite(kickoff) || elapsedMs < 0) {
+    return {
+      fixtureId,
+      gameState: "scheduled",
+      displayState: "Kickoff soon",
+      participant1Score: 0,
+      participant2Score: 0,
+      confirmed: true,
+      timestamp: Date.now(),
+      raw: { demo: true, phase: "scheduled" }
+    };
+  }
+
+  if (elapsedMs < 60_000) {
+    return {
+      fixtureId,
+      gameState: "live",
+      displayState: "1H",
+      participant1Score: 0,
+      participant2Score: 0,
+      confirmed: true,
+      seq: 1,
+      timestamp: Date.now(),
+      raw: { demo: true, phase: "kickoff" }
+    };
+  }
+
+  if (elapsedMs < 120_000) {
+    return {
+      fixtureId,
+      gameState: "live",
+      displayState: "23'",
+      participant1Score: 1,
+      participant2Score: 0,
+      confirmed: true,
+      seq: 2,
+      timestamp: Date.now(),
+      raw: { demo: true, phase: "first_goal" }
+    };
+  }
+
+  if (elapsedMs < 180_000) {
+    return {
+      fixtureId,
+      gameState: "live",
+      displayState: "67'",
+      participant1Score: 1,
+      participant2Score: 1,
+      confirmed: true,
+      seq: 3,
+      timestamp: Date.now(),
+      raw: { demo: true, phase: "equalizer" }
+    };
+  }
+
+  return {
+    fixtureId,
+    gameState: "final",
+    displayState: "Full-time",
+    participant1Score: 2,
+    participant2Score: 1,
+    confirmed: true,
+    seq: 4,
+    timestamp: Date.now(),
+    raw: { demo: true, phase: "full_time" }
+  };
 }

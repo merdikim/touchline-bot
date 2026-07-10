@@ -6,9 +6,18 @@ function asObject(value: unknown): JsonObject {
   return value && typeof value === "object" ? (value as JsonObject) : {};
 }
 
+function getValue(obj: JsonObject, key: string) {
+  if (key in obj) {
+    return obj[key];
+  }
+  const normalizedKey = key.toLowerCase().replaceAll("_", "");
+  const match = Object.keys(obj).find((candidate) => candidate.toLowerCase().replaceAll("_", "") === normalizedKey);
+  return match ? obj[match] : undefined;
+}
+
 function pickString(obj: JsonObject, keys: string[], fallback?: string): string | undefined {
   for (const key of keys) {
-    const value = obj[key];
+    const value = getValue(obj, key);
     if (typeof value === "string" && value.trim()) {
       return value;
     }
@@ -18,7 +27,7 @@ function pickString(obj: JsonObject, keys: string[], fallback?: string): string 
 
 function pickNumber(obj: JsonObject, keys: string[], fallback?: number): number | undefined {
   for (const key of keys) {
-    const value = obj[key];
+    const value = getValue(obj, key);
     if (typeof value === "number" && Number.isFinite(value)) {
       return value;
     }
@@ -31,7 +40,7 @@ function pickNumber(obj: JsonObject, keys: string[], fallback?: number): number 
 
 function pickBoolean(obj: JsonObject, keys: string[], fallback?: boolean): boolean | undefined {
   for (const key of keys) {
-    const value = obj[key];
+    const value = getValue(obj, key);
     if (typeof value === "boolean") {
       return value;
     }
@@ -41,7 +50,7 @@ function pickBoolean(obj: JsonObject, keys: string[], fallback?: boolean): boole
 
 function pickDateString(obj: JsonObject, keys: string[], fallback: string): string {
   for (const key of keys) {
-    const value = obj[key];
+    const value = getValue(obj, key);
     if (typeof value === "string" && value.trim()) {
       return value;
     }
@@ -89,15 +98,15 @@ export function normalizeFixtures(raw: unknown): NormalizedFixture[] {
 
 export function normalizeScoreState(fixtureId: number, raw: unknown): NormalizedScoreState {
   const obj = asObject(raw);
-  const score = asObject(obj.score ?? obj.currentScore);
+  const score = asObject(getValue(obj, "score") ?? getValue(obj, "currentScore"));
 
   return {
     fixtureId: pickNumber(obj, ["fixtureId", "fixture_id", "id"], fixtureId) ?? fixtureId,
-    gameState: pickString(obj, ["gameState", "game_state", "status"]),
-    displayState: pickString(obj, ["displayState", "display_state", "clock"]),
-    participant1Score: pickNumber(obj, ["participant1Score", "homeScore", "participant1_score"], pickNumber(score, ["participant1", "home"], 0)) ?? 0,
-    participant2Score: pickNumber(obj, ["participant2Score", "awayScore", "participant2_score"], pickNumber(score, ["participant2", "away"], 0)) ?? 0,
-    confirmed: Boolean(obj.confirmed ?? obj.verified),
+    gameState: pickString(obj, ["gameState", "game_state", "status", "matchStatus", "fixtureStatus", "state"]),
+    displayState: pickString(obj, ["displayState", "display_state", "clock", "period", "time", "minute"]),
+    participant1Score: pickNumber(obj, ["participant1Score", "homeScore", "participant1_score", "score1", "home_score"], pickNumber(score, ["participant1", "home", "participant1Score", "homeScore"], 0)) ?? 0,
+    participant2Score: pickNumber(obj, ["participant2Score", "awayScore", "participant2_score", "score2", "away_score"], pickNumber(score, ["participant2", "away", "participant2Score", "awayScore"], 0)) ?? 0,
+    confirmed: Boolean(getValue(obj, "confirmed") ?? getValue(obj, "verified")),
     seq: pickNumber(obj, ["seq", "sequence"]),
     timestamp: pickNumber(obj, ["timestamp", "ts", "txlineTs"]),
     raw

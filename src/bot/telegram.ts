@@ -510,7 +510,7 @@ async function upsertScoreState(db: Db, matchId: string, score: { gameState?: st
 
 async function createDemoMatch(db: Db, groupId: string) {
   const matchId = "demo_match_brazil_france";
-  const kickoff = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const kickoff = new Date(Date.now() + 60 * 1000).toISOString();
   await db.insert(matches).values({
     id: matchId,
     txlineFixtureId: 9000001,

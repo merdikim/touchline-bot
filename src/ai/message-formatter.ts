@@ -15,6 +15,8 @@ export class AiMessageFormatter {
     if (!trimmed || !this.env.AI_API_KEY) {
       return draft;
     }
+    const protectedDraft = context.parseMode === "HTML" ? protectTelegramHtml(trimmed) : null;
+    const draftForModel = protectedDraft?.text ?? trimmed;
 
     try {
       const client = new OpenAI({
@@ -36,7 +38,7 @@ export class AiMessageFormatter {
               "Avoid gambling, wagering, payout, staking, wallet, and payment language.",
               "Keep the message concise and readable on Telegram.",
               context.parseMode === "HTML"
-                ? "The draft may contain Telegram HTML. Preserve all HTML tags and href attributes exactly; do not add unsupported HTML."
+                ? "The draft may contain Telegram HTML placeholders like __TG_HTML_0__. Preserve those placeholders exactly; do not add HTML or Markdown."
                 : "Return plain text only. Do not use Markdown formatting."
             ].join(" ")
           },
@@ -46,7 +48,7 @@ export class AiMessageFormatter {
               context.kind ? `Message kind: ${context.kind}` : null,
               context.userMessage ? `User message: ${context.userMessage}` : null,
               "Rewrite this draft:",
-              trimmed
+              draftForModel
             ].filter(Boolean).join("\n")
           }
         ],
@@ -54,7 +56,11 @@ export class AiMessageFormatter {
       });
 
       const formatted = response.choices[0]?.message.content?.trim();
-      return formatted ? limitTelegramMessage(formatted) : draft;
+      if (!formatted) {
+        return draft;
+      }
+      const restored = protectedDraft ? restoreTelegramHtml(formatted, protectedDraft.replacements) : formatted;
+      return limitTelegramMessage(restored);
     } catch (error) {
       console.log("AI message formatting failed", error);
       return draft;
@@ -67,4 +73,18 @@ function limitTelegramMessage(text: string) {
     return text;
   }
   return `${text.slice(0, 3897).trimEnd()}...`;
+}
+
+function protectTelegramHtml(text: string) {
+  const replacements: Array<{ token: string; value: string }> = [];
+  const protectedText = text.replace(/<a\s+href="[^"]+">[^<]+<\/a>/g, (value) => {
+    const token = `__TG_HTML_${replacements.length}__`;
+    replacements.push({ token, value });
+    return token;
+  });
+  return { text: protectedText, replacements };
+}
+
+function restoreTelegramHtml(text: string, replacements: Array<{ token: string; value: string }>) {
+  return replacements.reduce((next, replacement) => next.replaceAll(replacement.token, replacement.value), text);
 }
