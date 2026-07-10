@@ -6,6 +6,7 @@ export type BotIntentName =
   | "get_odds_commentary"
   | "get_verification"
   | "get_available_matches"
+  | "set_match_alert"
   | "run_demo"
   | "smalltalk"
   | "unclear";
@@ -58,6 +59,7 @@ export const intentJsonSchema = {
         "get_odds_commentary",
         "get_verification",
         "get_available_matches",
+        "set_match_alert",
         "run_demo",
         "smalltalk",
         "unclear"

@@ -5,6 +5,7 @@ export type MessageFormatContext = {
   kind?: string;
   userMessage?: string;
   parseMode?: "HTML";
+  allowGreeting?: boolean;
 };
 
 export class AiMessageFormatter {
@@ -31,7 +32,12 @@ export class AiMessageFormatter {
             role: "system",
             content: [
               "You rewrite Touchline bot messages for Telegram football group chats.",
-              "Make the message sound natural, warm, and human, like a concise group-chat reply.",
+              context.allowGreeting
+                ? "Make the message sound natural, warm, and human, like a concise welcome to the whole group. A short greeting like hey everyone is allowed."
+                : "Make the message sound natural, warm, and human, like a concise reply to one person.",
+              context.allowGreeting
+                ? "Do not tag a specific user unless the draft already does."
+                : "Do not start with greetings or audience callouts like hey, hi, hello, hey team, team, folks, mate, or everyone.",
               "Preserve every factual detail: team names, scores, kickoff times, competitions, points, rankings, sequence numbers, and TxLINE attribution.",
               "Do not invent fixtures, odds, scores, proofs, winners, capabilities, URLs, or user names.",
               "Keep numbered lists complete and in the same order.",
@@ -60,7 +66,7 @@ export class AiMessageFormatter {
         return draft;
       }
       const restored = protectedDraft ? restoreTelegramHtml(formatted, protectedDraft.replacements) : formatted;
-      return limitTelegramMessage(restored);
+      return limitTelegramMessage(context.allowGreeting ? restored : stripAudienceGreeting(restored));
     } catch (error) {
       console.log("AI message formatting failed", error);
       return draft;
@@ -73,6 +79,14 @@ function limitTelegramMessage(text: string) {
     return text;
   }
   return `${text.slice(0, 3897).trimEnd()}...`;
+}
+
+function stripAudienceGreeting(text: string) {
+  return text
+    .replace(/^\s*(hey|hi|hello|yo)\s+(team|folks|everyone|all|mate|there)[,!:\-\s]+/i, "")
+    .replace(/^\s*(hey|hi|hello|yo)[,!:\-\s]+/i, "")
+    .replace(/^\s*(team|folks|everyone)[,!:\-\s]+/i, "")
+    .trimStart();
 }
 
 function protectTelegramHtml(text: string) {

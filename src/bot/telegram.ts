@@ -15,6 +15,7 @@ import { PredictionService } from "../services/prediction-service";
 import { LeaderboardService } from "../services/leaderboard-service";
 import { CommentaryService } from "../services/commentary-service";
 import { VerificationService } from "../services/verification-service";
+import { ReminderService } from "../services/reminder-service";
 import { displayName } from "./formatters";
 import { formatKickoff } from "../utils/dates";
 import { newId } from "../utils/ids";
@@ -37,6 +38,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   const leaderboard = new LeaderboardService(db);
   const commentary = new CommentaryService();
   const verification = new VerificationService(db);
+  const reminders = new ReminderService(db);
   const router = new IntentRouter(env);
   const formatter = new AiMessageFormatter(env);
 
@@ -48,7 +50,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
     }
 
     const group = await groups.upsertTelegramGroup({ telegramGroupId: String(chat.id), title: "title" in chat ? chat.title : null });
-    await replyAndRemember(ctx, groups, group.id, formatter, commentary.groupIntro(), "group_intro");
+    await replyAndRemember(ctx, groups, group.id, formatter, commentary.groupIntro(), "group_intro", { kind: "group_intro", allowGreeting: true });
   });
 
   bot.on("message:text", async (ctx) => {
@@ -105,6 +107,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
         leaderboard,
         commentary,
         verification,
+        reminders,
         formatter
       });
     } catch (error) {
@@ -146,6 +149,7 @@ async function handleIntent(
     leaderboard: LeaderboardService;
     commentary: CommentaryService;
     verification: VerificationService;
+    reminders: ReminderService;
     formatter: AiMessageFormatter;
   }
 ) {
@@ -202,6 +206,46 @@ async function handleIntent(
     });
     const text = fixtureListText(filteredFixtures, noAvailableFixturesMessage(deps.intent.dateQuery ?? deps.text));
     await send(text);
+    return;
+  }
+
+  if (deps.intent.intent === "set_match_alert") {
+    const offsetMinutes = parseReminderOffsetMinutes(deps.text) ?? 60;
+    const fixtures = await deps.txline.getFixtures();
+    const filteredFixtures = filterAvailableFixtures(fixtures, {
+      teamQuery: deps.intent.teamQuery,
+      dateQuery: deps.intent.dateQuery,
+      userText: deps.text,
+      match: deps.intent.match
+    });
+    if (filteredFixtures.length === 0) {
+      await send("I couldn't find that upcoming fixture in TxLINE. Try the teams, tournament, or day again.");
+      return;
+    }
+    if (filteredFixtures.length > 1) {
+      await send(`I found a few possible fixtures. Which one should I remind you about?\n\n${fixtureListText(filteredFixtures.slice(0, 5), "")}`);
+      return;
+    }
+
+    const reminder = await deps.reminders.create({
+      groupId: deps.groupId,
+      userId: deps.userId,
+      requesterUsername: ctx.message?.from?.username,
+      requesterDisplayName: deps.userDisplayName,
+      fixture: filteredFixtures[0],
+      offsetMinutes
+    });
+
+    if (reminder.kind === "too_late") {
+      await send("That reminder time has already passed for this fixture. Try a shorter alert window or pick another match.");
+      return;
+    }
+    if (reminder.kind === "invalid_kickoff") {
+      await send("I found the fixture, but TxLINE did not return a usable kickoff time for it.");
+      return;
+    }
+
+    await send(`Done. I will remind you ${formatReminderOffset(offsetMinutes)} before ${filteredFixtures[0].participant1} vs ${filteredFixtures[0].participant2} (${formatKickoff(filteredFixtures[0].startTime)}).`);
     return;
   }
 
@@ -347,21 +391,39 @@ async function handleIntent(
 }
 
 async function reply(ctx: Context, formatter: AiMessageFormatter, text: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
-  return ctx.reply(await formatter.format(text, context));
+  return ctx.reply(withRequesterMention(ctx, await formatter.format(text, context)));
 }
 
 async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, formatter: AiMessageFormatter, text: string, messageType?: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
   const formatted = await formatter.format(text, context ?? { kind: messageType });
-  const message = await ctx.reply(formatted);
-  await groups.setLatestBotPrompt(groupId, formatted);
+  const textWithMention = withRequesterMention(ctx, formatted);
+  const message = await ctx.reply(textWithMention);
+  await groups.setLatestBotPrompt(groupId, textWithMention);
   if (messageType) {
     await groups.rememberBotMessage({
       groupId,
       telegramMessageId: String(message.message_id),
       messageType,
-      payload: { text: formatted, draft: text }
+      payload: { text: textWithMention, draft: text }
     });
   }
+}
+
+function withRequesterMention(ctx: Context, text: string) {
+  const username = ctx.message?.from?.username;
+  const chatType = ctx.message?.chat.type;
+  if (!username || chatType === "private" || text.startsWith(`@${username}`)) {
+    return text;
+  }
+  return `@${username} ${stripAudienceGreeting(text)}`;
+}
+
+function stripAudienceGreeting(text: string) {
+  return text
+    .replace(/^\s*(hey|hi|hello|yo)\s+(team|folks|everyone|all|mate|there)[,!:\-\s]+/i, "")
+    .replace(/^\s*(hey|hi|hello|yo)[,!:\-\s]+/i, "")
+    .replace(/^\s*(team|folks|everyone)[,!:\-\s]+/i, "")
+    .trimStart();
 }
 
 function matchQueryFromRef(match: MatchRef) {
@@ -581,6 +643,33 @@ function isFixtureScheduleQuestion(text: string) {
 
 function isLiveStatusQuestion(text: string) {
   return /\b(e?score|live|now|current(?:ly)?|status|result|winning|who'?s\s+up|what'?s\s+happening|full\s*time|half\s*time|ft|ht)\b/i.test(text);
+}
+
+function parseReminderOffsetMinutes(text: string) {
+  const normalized = text.toLowerCase();
+  if (/\bhalf\s+(an?\s+)?hour\b/.test(normalized)) {
+    return 30;
+  }
+  const hourMatch = normalized.match(/\b(\d+(?:\.\d+)?)\s*(hours?|hrs?|h)\b/);
+  if (hourMatch) {
+    return Math.round(Number(hourMatch[1]) * 60);
+  }
+  const minuteMatch = normalized.match(/\b(\d+)\s*(minutes?|mins?|m)\b/);
+  if (minuteMatch) {
+    return Number(minuteMatch[1]);
+  }
+  if (/\ban?\s+hour\b/.test(normalized)) {
+    return 60;
+  }
+  return null;
+}
+
+function formatReminderOffset(minutes: number) {
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 function noAvailableFixturesMessage(query: string) {

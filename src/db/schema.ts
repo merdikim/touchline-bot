@@ -107,3 +107,22 @@ export const botMessages = sqliteTable("bot_messages", {
   payload: text("payload"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`)
 });
+
+export const matchReminders = sqliteTable("match_reminders", {
+  id: text("id").primaryKey(),
+  groupId: text("group_id").notNull().references(() => groups.id),
+  userId: text("user_id").references(() => users.id),
+  requesterUsername: text("requester_username"),
+  requesterDisplayName: text("requester_display_name"),
+  txlineFixtureId: integer("txline_fixture_id").notNull(),
+  participant1: text("participant1").notNull(),
+  participant2: text("participant2").notNull(),
+  competition: text("competition"),
+  startTime: text("start_time").notNull(),
+  remindAt: text("remind_at").notNull(),
+  offsetMinutes: integer("offset_minutes").notNull(),
+  status: text("status").notNull().default("pending"),
+  sentAt: text("sent_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`)
+});
