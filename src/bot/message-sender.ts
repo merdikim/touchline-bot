@@ -1,5 +1,6 @@
 import type { WorkerEnv } from "../env";
 import { AiMessageFormatter, type MessageFormatContext } from "../ai/message-formatter";
+import { toTelegramHtml } from "./mentions";
 import { log } from "../utils/logger";
 
 export class TelegramMessageSender {
@@ -35,7 +36,7 @@ export class TelegramMessageSender {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text,
+        text: options.parseMode === "HTML" ? toTelegramHtml(text) : text,
         parse_mode: options.parseMode,
         disable_web_page_preview: true
       })

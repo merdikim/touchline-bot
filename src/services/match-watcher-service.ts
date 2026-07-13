@@ -14,11 +14,12 @@ import { log } from "../utils/logger";
 type Db = ReturnType<typeof createDb>;
 
 export class MatchWatcherService {
-  private readonly commentary = new CommentaryService();
+  private readonly commentary: CommentaryService;
   private readonly leaderboard: LeaderboardService;
   private readonly sender: TelegramMessageSender;
 
   constructor(private readonly db: Db, private readonly txline: TxLineClient, env: WorkerEnv) {
+    this.commentary = new CommentaryService(env.TELEGRAM_BOT_USERNAME);
     this.leaderboard = new LeaderboardService(db);
     this.sender = new TelegramMessageSender(env);
   }
@@ -151,7 +152,7 @@ export class MatchWatcherService {
       }
     }
     if (changedScore || final) {
-      await this.safeSendHumanized(groupId, this.commentary.leaderboardUpdate(entries, final), { kind: final ? "final_leaderboard" : "leaderboard_update" });
+      await this.safeSendHumanized(groupId, this.commentary.leaderboardUpdate(entries, final), { kind: final ? "final_leaderboard" : "leaderboard_update", parseMode: "HTML" });
     }
 
     if (final) {

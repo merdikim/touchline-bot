@@ -17,6 +17,7 @@ import { CommentaryService } from "../services/commentary-service";
 import { VerificationService } from "../services/verification-service";
 import { ReminderService } from "../services/reminder-service";
 import { displayName } from "./formatters";
+import { mention, stripTelegramHtml, toTelegramHtml } from "./mentions";
 import { formatKickoff } from "../utils/dates";
 import { newId } from "../utils/ids";
 import { log } from "../utils/logger";
@@ -64,7 +65,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   const matchesService = new MatchService(db, txline);
   const predictions = new PredictionService(db);
   const leaderboard = new LeaderboardService(db);
-  const commentary = new CommentaryService();
+  const commentary = new CommentaryService(env.TELEGRAM_BOT_USERNAME);
   const verification = new VerificationService(db);
   const reminders = new ReminderService(db);
   const router = new IntentRouter(env);
@@ -277,7 +278,7 @@ async function handleIntent(
 
     const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
     if (target.kind === "none") {
-      await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : "Mention me with a fixture first, like: @touchline what's the score for Brazil vs France");
+      await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : `Mention me with a fixture first, like: ${deps.commentary.mentionExample("what's the score for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
@@ -328,11 +329,11 @@ async function handleIntent(
     }
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
-      await send(activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches, deps.commentary));
       return;
     }
     const result = await deps.predictions.submit({
@@ -342,7 +343,7 @@ async function handleIntent(
       rawPrediction: deps.intent.prediction?.raw || deps.text
     });
     const text = result.ok
-      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
+      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, platformUserId: ctx.message?.from ? String(ctx.message.from.id) : null, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
       : result.reason;
     await send(text);
     return;
@@ -351,11 +352,11 @@ async function handleIntent(
   if (deps.intent.intent === "get_leaderboard") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
-      await send(activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches, deps.commentary));
       return;
     }
     const entries = await deps.leaderboard.calculate(target.groupMatch.id, target.match.id, target.groupMatch.baselineOddsSummary);
@@ -366,11 +367,11 @@ async function handleIntent(
   if (deps.intent.intent === "get_odds_commentary") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
-      await send(activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches, deps.commentary));
       return;
     }
     const odds = await deps.txline.getOddsSnapshot(target.match.txlineFixtureId, undefined, target.match.participant1, target.match.participant2);
@@ -388,18 +389,18 @@ async function handleIntent(
   if (deps.intent.intent === "get_verification") {
     const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
     if (target.kind === "none") {
-      await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+      await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
-      await send(activeMatchClarification(target.matches));
+      await send(activeMatchClarification(target.matches, deps.commentary));
       return;
     }
     await send(await deps.verification.summarize(target.match.id));
     return;
   }
 
-  await send("Mention me with a fixture first, like: @touchline create a leaderboard for Brazil vs France");
+  await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
 }
 
 async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: SendReply, pendingAction?: PendingAction | null) {
@@ -483,31 +484,37 @@ async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: S
 }
 
 async function reply(ctx: Context, formatter: AiMessageFormatter, text: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
-  return ctx.reply(withRequesterMention(ctx, await formatter.format(text, context)));
+  const formatted = await formatter.format(text, { ...context, parseMode: "HTML" });
+  return ctx.reply(toTelegramHtml(withRequesterMention(ctx, formatted)), { parse_mode: "HTML" });
 }
 
 async function replyAndRemember(ctx: Context, groups: GroupService, groupId: string, formatter: AiMessageFormatter, text: string, messageType?: string, context?: Parameters<AiMessageFormatter["format"]>[1], payload?: Record<string, unknown>) {
-  const formatted = await formatter.format(text, context ?? { kind: messageType });
+  const formatted = await formatter.format(text, { ...(context ?? { kind: messageType }), parseMode: "HTML" });
   const textWithMention = withRequesterMention(ctx, formatted);
-  const message = await ctx.reply(textWithMention);
-  await groups.setLatestBotPrompt(groupId, textWithMention);
+  const message = await ctx.reply(toTelegramHtml(textWithMention), { parse_mode: "HTML" });
+  const plainText = stripTelegramHtml(textWithMention);
+  await groups.setLatestBotPrompt(groupId, plainText);
   if (messageType) {
     await groups.rememberBotMessage({
       groupId,
       telegramMessageId: String(message.message_id),
       messageType,
-      payload: { ...payload, text: textWithMention, draft: text }
+      payload: { ...payload, text: plainText, draft: stripTelegramHtml(text) }
     });
   }
 }
 
 function withRequesterMention(ctx: Context, text: string) {
-  const username = ctx.message?.from?.username;
+  const requester = ctx.message?.from;
   const chatType = ctx.message?.chat.type;
-  if (!username || chatType === "private" || text.startsWith(`@${username}`)) {
+  if (!requester || chatType === "private") {
     return text;
   }
-  return `@${username} ${stripAudienceGreeting(text)}`;
+  const requesterMention = mention({ platformUserId: String(requester.id), displayName: displayName(requester) });
+  if (text.startsWith(requesterMention)) {
+    return text;
+  }
+  return `${requesterMention} ${stripAudienceGreeting(text)}`;
 }
 
 function stripAudienceGreeting(text: string) {
@@ -585,12 +592,12 @@ function resolveActiveGroupMatchTarget(
   return { kind: "ambiguous", matches: matchesForRef.map((row) => row.match) };
 }
 
-function activeMatchClarification(matches: MatchOption[]) {
+function activeMatchClarification(matches: MatchOption[], commentary: CommentaryService) {
   const options = matches.map((match, index) => {
     const details = [match.competition, formatKickoff(match.startTime)].filter(Boolean).join(", ");
     return `${index + 1}. ${match.participant1} vs ${match.participant2}${details ? ` (${details})` : ""}`;
   }).join("\n");
-  return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: @touchline leaderboard for Brazil vs France`;
+  return `Which leaderboard do you mean?\n\n${options}\n\nMention me with the teams, like: ${commentary.mentionExample("leaderboard for Brazil vs France")}`;
 }
 
 function rememberFixtures(fixtures: NormalizedFixture[]): RememberedFixture[] {

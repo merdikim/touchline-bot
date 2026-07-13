@@ -1,6 +1,13 @@
 import type { LeaderboardEntry } from "./leaderboard-service";
+import { mention } from "../bot/mentions";
 
 export class CommentaryService {
+  constructor(private readonly botUsername: string) {}
+
+  mentionExample(example: string) {
+    return `@${this.botUsername} ${example}`;
+  }
+
   groupIntro() {
     return [
       "Yo, thanks for adding me.",
@@ -9,7 +16,7 @@ export class CommentaryService {
       "",
       "Scores and odds are verified by TxLINE (by TxODDS).",
       "",
-      "Just mention me with a game when you are ready, like: @touchline Brazil vs France"
+      `Just mention me with a game when you are ready, like: ${this.mentionExample("Brazil vs France")}`
     ].join("\n");
   }
 
@@ -30,15 +37,15 @@ export class CommentaryService {
     return "I couldn't find that fixture yet. Try the team names or ask me for available matches.";
   }
 
-  predictionLocked(input: { displayName: string; participant1: string; participant2: string; score: string }) {
-    return `Locked in: ${input.displayName} has ${input.participant1} ${input.score} ${input.participant2}.`;
+  predictionLocked(input: { displayName: string; platformUserId?: string | null; participant1: string; participant2: string; score: string }) {
+    return `Locked in: ${mention(input)} has ${input.participant1} ${input.score} ${input.participant2}.`;
   }
 
   leaderboard(entries: LeaderboardEntry[]) {
     if (entries.length === 0) {
       return "No predictions locked yet. First brave pick gets the early spotlight.";
     }
-    return entries.map((entry, index) => `${index + 1}. ${entry.displayName} - ${entry.points} pts (${entry.prediction})`).join("\n");
+    return entries.map((entry, index) => `${index + 1}. ${mention(entry)} - ${entry.points} pts (${entry.prediction})`).join("\n");
   }
 
   status(input: { participant1: string; participant2: string; competition?: string | null; participant1Score: number; participant2Score: number; state?: string | null; confirmed?: boolean | null }) {
@@ -96,8 +103,7 @@ export class CommentaryService {
   }
 
   perfectPickWinner(entry: LeaderboardEntry) {
-    const mention = `<a href="tg://user?id=${escapeHtmlAttribute(entry.platformUserId)}">${escapeHtml(entry.displayName)}</a>`;
-    return `Perfect pick. ${mention} called the exact score. Take a bow.`;
+    return `Perfect pick. ${mention(entry)} called the exact score. Take a bow.`;
   }
 
   moreMatchesToTry(matches: Array<{ participant1: string; participant2: string; competition?: string | null; kickoff: string }>) {
@@ -112,20 +118,9 @@ export class CommentaryService {
   }
 
   finalRecap(input: { participant1: string; participant2: string; p1: number; p2: number; entries: LeaderboardEntry[] }) {
-    const winner = input.entries[0]?.displayName ?? "No winner";
-    const perfect = input.entries.find((entry) => entry.perfect)?.displayName ?? "None";
-    const boldest = input.entries.find((entry) => entry.boldPick)?.displayName ?? "None";
-    return `Full-time: ${input.participant1} ${input.p1}-${input.p2} ${input.participant2}.\n\nWinner: ${winner}\nPerfect score: ${perfect}\nBoldest pick: ${boldest}`;
+    const winner = input.entries[0] ? mention(input.entries[0]) : "No winner";
+    const perfectEntry = input.entries.find((entry) => entry.perfect);
+    const boldestEntry = input.entries.find((entry) => entry.boldPick);
+    return `Full-time: ${input.participant1} ${input.p1}-${input.p2} ${input.participant2}.\n\nWinner: ${winner}\nPerfect score: ${perfectEntry ? mention(perfectEntry) : "None"}\nBoldest pick: ${boldestEntry ? mention(boldestEntry) : "None"}`;
   }
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function escapeHtmlAttribute(value: string) {
-  return escapeHtml(value).replaceAll('"', "&quot;");
 }

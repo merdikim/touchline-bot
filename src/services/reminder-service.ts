@@ -1,9 +1,10 @@
 import { and, eq, lte } from "drizzle-orm";
 import type { createDb } from "../db/client";
-import { matchReminders } from "../db/schema";
+import { matchReminders, users } from "../db/schema";
 import type { WorkerEnv } from "../env";
 import type { NormalizedFixture } from "../txline/types";
 import { TelegramMessageSender } from "../bot/message-sender";
+import { mention } from "../bot/mentions";
 import { formatKickoff } from "../utils/dates";
 import { newId } from "../utils/ids";
 import { log } from "../utils/logger";
@@ -65,15 +66,17 @@ export class ReminderService {
     }
 
     const due = await this.db
-      .select()
+      .select({ reminder: matchReminders, requester: users })
       .from(matchReminders)
+      .leftJoin(users, eq(matchReminders.userId, users.id))
       .where(and(eq(matchReminders.status, "pending"), lte(matchReminders.remindAt, now.toISOString())))
       .limit(20);
 
-    for (const reminder of due) {
+    for (const { reminder, requester } of due) {
       const chatId = reminder.groupId.replace("telegram_group_", "");
       try {
-        await this.sender.sendMessage(chatId, reminderMessage(reminder), {
+        await this.sender.sendMessage(chatId, reminderMessage(reminder, requester?.platformUserId), {
+          parseMode: "HTML",
           formatContext: { kind: "match_reminder" }
         });
         await this.db.update(matchReminders).set({
@@ -92,7 +95,10 @@ export class ReminderService {
   }
 }
 
-function reminderMessage(reminder: typeof matchReminders.$inferSelect) {
-  const mention = reminder.requesterUsername ? `@${reminder.requesterUsername}` : reminder.requesterDisplayName ?? "Reminder";
-  return `${mention} reminder: ${reminder.participant1} vs ${reminder.participant2} kicks off at ${formatKickoff(reminder.startTime)}.`;
+function reminderMessage(reminder: typeof matchReminders.$inferSelect, platformUserId?: string | null) {
+  const displayName = reminder.requesterDisplayName ?? reminder.requesterUsername ?? "Reminder";
+  const requester = platformUserId
+    ? mention({ platformUserId, displayName })
+    : reminder.requesterUsername ? `@${reminder.requesterUsername}` : displayName;
+  return `${requester} reminder: ${reminder.participant1} vs ${reminder.participant2} kicks off at ${formatKickoff(reminder.startTime)}.`;
 }
