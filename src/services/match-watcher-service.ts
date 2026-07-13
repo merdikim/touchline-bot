@@ -38,6 +38,32 @@ export class MatchWatcherService {
     })));
   }
 
+  async pollActiveMatches(queue?: Queue<MatchPollJob>) {
+    const rows = await this.db
+      .select({ groupMatch: groupMatches, match: matches })
+      .from(groupMatches)
+      .innerJoin(matches, eq(groupMatches.matchId, matches.id))
+      .where(and(eq(groupMatches.status, "active")));
+
+    for (const row of rows) {
+      try {
+        await this.poll({
+          kind: "poll_match",
+          groupMatchId: row.groupMatch.id,
+          matchId: row.match.id,
+          txlineFixtureId: row.match.txlineFixtureId
+        }, queue);
+      } catch (error) {
+        log("error", "active match poll failed", {
+          groupMatchId: row.groupMatch.id,
+          matchId: row.match.id,
+          txlineFixtureId: row.match.txlineFixtureId,
+          error: error instanceof Error ? error.message : "Unknown error"
+        });
+      }
+    }
+  }
+
   async poll(job: PollMatchJob, queue?: Queue<MatchPollJob>) {
     const [row] = await this.db
       .select({ groupMatch: groupMatches, match: matches })

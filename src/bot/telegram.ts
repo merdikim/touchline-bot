@@ -313,7 +313,7 @@ async function handleIntent(
 
   if (deps.intent.intent === "smalltalk") {
     const smalltalkCount = await deps.groups.countBotMessages({ groupId: deps.groupId, messageType: "smalltalk" });
-    if (smalltalkCount >= 2) {
+    if (smalltalkCount >= 200) {
       await send(gamesOnlyResponse(), "smalltalk_limit");
       return;
     }
@@ -428,7 +428,7 @@ async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: S
 
   if (filteredFixtures.length === 0) {
     await send(
-      "I couldn't find that upcoming fixture in TxLINE. Reply with the teams, tournament, or day and I'll keep the reminder request open.",
+      "I couldn'''t find that upcoming fixture. Reply with the teams, tournament, or day and I'll keep the reminder request open.",
       "alert_clarification",
       { pendingAction: nextPendingAction }
     );
@@ -471,7 +471,7 @@ async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: S
     return true;
   }
   if (reminder.kind === "invalid_kickoff") {
-    await send("I found the fixture, but TxLINE did not return a usable kickoff time for it.");
+    await send("I found the fixture, but I could not get a usable kickoff time for it.");
     return true;
   }
 
@@ -920,21 +920,21 @@ function formatReminderOffset(minutes: number) {
 function noAvailableFixturesMessage(query: string) {
   const normalized = query.toLowerCase();
   if (/\b(today|tonight)\b/.test(normalized)) {
-    return "No fixtures returned by TxLINE for today.";
+    return "No fixtures found for today.";
   }
   if (/\bnext\s+week\b/.test(normalized)) {
-    return "No fixtures returned by TxLINE for next week.";
+    return "No fixtures found for next week.";
   }
   if (/\b(this\s+week|week)\b/.test(normalized)) {
-    return "No fixtures returned by TxLINE for this week.";
+    return "No fixtures found for this week.";
   }
   if (/\bweekend\b/.test(normalized)) {
-    return "No fixtures returned by TxLINE for this weekend.";
+    return "No fixtures found for this weekend.";
   }
   if (/\b(this\s+month|month)\b/.test(normalized)) {
-    return "No fixtures returned by TxLINE for this month.";
+    return "No fixtures found for this month.";
   }
-  return "No fixtures returned by TxLINE right now.";
+  return "No fixtures found right now.";
 }
 
 function conciseSmalltalkResponse(response?: string | null) {

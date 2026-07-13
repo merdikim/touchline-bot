@@ -38,7 +38,8 @@ export class AiMessageFormatter {
               context.allowGreeting
                 ? "Do not tag a specific user unless the draft already does."
                 : "Do not start with greetings or audience callouts like hey, hi, hello, hey team, team, folks, mate, or everyone.",
-              "Preserve every factual detail: team names, scores, kickoff times, competitions, points, rankings, sequence numbers, and TxLINE attribution.",
+              "Preserve every factual detail: team names, scores, kickoff times, competitions, points, rankings, sequence numbers, and any data source attribution.",
+              "Keep data source attribution word for word when the draft has it, and never add TxLINE or TxODDS to a draft that does not mention them.",
               "Do not invent fixtures, odds, scores, proofs, winners, capabilities, URLs, or user names.",
               "Keep numbered lists complete and in the same order.",
               "Avoid gambling, wagering, payout, staking, wallet, and payment language.",

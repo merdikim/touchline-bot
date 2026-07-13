@@ -7,13 +7,15 @@ export class CommentaryService {
       "",
       "I am here for match days: set up prediction leaderboards, keep score with live updates, and give bragging rights when someone nails it.",
       "",
+      "Scores and odds are verified by TxLINE (by TxODDS).",
+      "",
       "Just mention me with a game when you are ready, like: @touchline Brazil vs France"
     ].join("\n");
   }
 
   createdMatch(input: { participant1: string; participant2: string; competition?: string | null; kickoff: string }) {
     const competition = input.competition ? `\n${input.competition}` : "";
-    return `I'm in. ${input.participant1} vs ${input.participant2}${competition}\nKicks off ${input.kickoff}.\n\nDrop your predictions before kickoff.\nExample: ${input.participant1} 2-1\n\nVerified by TxLINE.`;
+    return `I'm in. ${input.participant1} vs ${input.participant2}${competition}\nKicks off ${input.kickoff}.\n\nDrop your predictions before kickoff.\nExample: ${input.participant1} 2-1`;
   }
 
   ambiguous(fixtures: Array<{ participant1: string; participant2: string; competition?: string | null; startTime: string }>) {
@@ -25,7 +27,7 @@ export class CommentaryService {
   }
 
   noMatch() {
-    return "I couldn't find that fixture in TxLINE yet. Try the team names or ask me for available matches.";
+    return "I couldn't find that fixture yet. Try the team names or ask me for available matches.";
   }
 
   predictionLocked(input: { displayName: string; participant1: string; participant2: string; score: string }) {
@@ -40,7 +42,7 @@ export class CommentaryService {
   }
 
   status(input: { participant1: string; participant2: string; competition?: string | null; participant1Score: number; participant2Score: number; state?: string | null; confirmed?: boolean | null }) {
-    return `${input.participant1} ${input.participant1Score}-${input.participant2Score} ${input.participant2}${input.competition ? `\n${input.competition}` : ""}${input.state ? `\n${input.state}` : ""}\n\n${input.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
+    return `${input.participant1} ${input.participant1Score}-${input.participant2Score} ${input.participant2}${input.competition ? `\n${input.competition}` : ""}${input.state ? `\n${input.state}` : ""}\n\n${input.confirmed ? "Confirmed." : "Live, not confirmed yet."}`;
   }
 
   odds(input: { favorite?: string; underdog?: string; movement?: string }) {
@@ -54,12 +56,12 @@ export class CommentaryService {
     if (input.movement && input.movement !== "unknown") {
       parts.push(`Market moved ${input.movement.replaceAll("_", " ")}.`);
     }
-    return `${parts.join(" ") || "No clear market momentum from the latest TxLINE odds snapshot."}\n\nNo advice here, just match context.`;
+    return `${parts.join(" ") || "No clear market momentum from the latest odds snapshot."}\n\nNo advice here, just match context.`;
   }
 
   goalUpdate(input: { participant1: string; participant2: string; p1: number; p2: number; leader?: string }) {
     const leading = input.p1 === input.p2 ? "Level again" : input.p1 > input.p2 ? `${input.participant1} lead` : `${input.participant2} lead`;
-    return `GOAL. ${leading} ${input.p1}-${input.p2}.\n\n${input.leader ? `${input.leader}'s pick is looking good now.` : "Leaderboard is moving."}\n\nVerified by TxLINE.`;
+    return `GOAL. ${leading} ${input.p1}-${input.p2}.\n\n${input.leader ? `${input.leader}'s pick is looking good now.` : "Leaderboard is moving."}`;
   }
 
   matchChange(input: {
@@ -74,7 +76,7 @@ export class CommentaryService {
       ? ` from ${input.previous.participant1Score}-${input.previous.participant2Score}`
       : "";
     const headline = input.final ? `Full-time: ${score}.` : `Score update: ${score}${previousScore}.`;
-    return `${headline}${input.next.state ? `\n${input.next.state}` : ""}\n\n${input.next.confirmed ? "Verified by TxLINE." : "Sourced from TxLINE."}`;
+    return `${headline}${input.next.state ? `\n${input.next.state}` : ""}\n\n${input.next.confirmed ? "Confirmed." : "Live, not confirmed yet."}`;
   }
 
   matchStarted(input: { participant1: string; participant2: string; state?: string | null }) {
@@ -113,7 +115,7 @@ export class CommentaryService {
     const winner = input.entries[0]?.displayName ?? "No winner";
     const perfect = input.entries.find((entry) => entry.perfect)?.displayName ?? "None";
     const boldest = input.entries.find((entry) => entry.boldPick)?.displayName ?? "None";
-    return `Full-time: ${input.participant1} ${input.p1}-${input.p2} ${input.participant2}.\n\nWinner: ${winner}\nPerfect score: ${perfect}\nBoldest pick: ${boldest}\n\nVerified by TxLINE.`;
+    return `Full-time: ${input.participant1} ${input.p1}-${input.p2} ${input.participant2}.\n\nWinner: ${winner}\nPerfect score: ${perfect}\nBoldest pick: ${boldest}`;
   }
 }
 

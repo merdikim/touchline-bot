@@ -16,7 +16,7 @@ export default {
     const watcher = new MatchWatcherService(db, new TxLineClient(env), env);
     const reminders = new ReminderService(db, env);
     ctx.waitUntil(Promise.all([
-      watcher.enqueueActiveMatches(env.MATCH_POLL_QUEUE),
+      watcher.pollActiveMatches(env.MATCH_POLL_QUEUE),
       reminders.sendDue()
     ]));
   },

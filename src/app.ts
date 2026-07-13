@@ -26,7 +26,7 @@ export function createApp() {
     if (body.groupMatchId && body.matchId && body.txlineFixtureId) {
       await watcher.poll(body as PollMatchJob, env.MATCH_POLL_QUEUE);
     } else {
-      await watcher.enqueueActiveMatches(env.MATCH_POLL_QUEUE);
+      await watcher.pollActiveMatches(env.MATCH_POLL_QUEUE);
     }
     return c.json({ ok: true });
   });
