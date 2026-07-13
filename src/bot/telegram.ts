@@ -308,7 +308,7 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "unclear") {
-    await send(deps.intent.clarificationQuestion ?? "Do you want a demo, a leaderboard, a prediction, or the score?");
+    await send(deps.intent.clarificationQuestion ?? "Do you want a demo, a leaderboard, a prediction, or the score?", "unclear");
     return;
   }
 
