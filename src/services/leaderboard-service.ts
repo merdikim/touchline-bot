@@ -8,6 +8,7 @@ type Db = ReturnType<typeof createDb>;
 export type LeaderboardEntry = {
   userId: string;
   platformUserId: string;
+  username: string | null;
   displayName: string;
   prediction: string;
   points: number;
@@ -33,6 +34,7 @@ export class LeaderboardService {
       return {
         userId: user.id,
         platformUserId: user.platformUserId,
+        username: user.username,
         displayName: user.displayName ?? user.username ?? "A fan",
         prediction: `${prediction.participant1Score}-${prediction.participant2Score}`,
         points,

@@ -37,7 +37,7 @@ export class CommentaryService {
     return "I couldn't find that fixture yet. Try the team names or ask me for available matches.";
   }
 
-  predictionLocked(input: { displayName: string; platformUserId?: string | null; participant1: string; participant2: string; score: string }) {
+  predictionLocked(input: { displayName: string; platformUserId?: string | null; username?: string | null; participant1: string; participant2: string; score: string }) {
     return `Locked in: ${mention(input)} has ${input.participant1} ${input.score} ${input.participant2}.`;
   }
 

@@ -11,7 +11,12 @@ export function escapeHtmlAttribute(value: string) {
   return escapeHtml(value).replaceAll('"', "&quot;");
 }
 
-export function mention(user: { platformUserId?: string | null; displayName: string }) {
+// Telegram auto-links a bare @handle, which is the tag style people expect. Members without a
+// handle can only be tagged by numeric id, which renders as their display name instead.
+export function mention(user: { platformUserId?: string | null; username?: string | null; displayName: string }) {
+  if (user.username) {
+    return `@${user.username}`;
+  }
   if (!user.platformUserId) {
     return escapeHtml(user.displayName);
   }

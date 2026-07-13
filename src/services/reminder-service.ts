@@ -75,7 +75,7 @@ export class ReminderService {
     for (const { reminder, requester } of due) {
       const chatId = reminder.groupId.replace("telegram_group_", "");
       try {
-        await this.sender.sendMessage(chatId, reminderMessage(reminder, requester?.platformUserId), {
+        await this.sender.sendMessage(chatId, reminderMessage(reminder, requester), {
           parseMode: "HTML",
           formatContext: { kind: "match_reminder" }
         });
@@ -95,10 +95,12 @@ export class ReminderService {
   }
 }
 
-function reminderMessage(reminder: typeof matchReminders.$inferSelect, platformUserId?: string | null) {
-  const displayName = reminder.requesterDisplayName ?? reminder.requesterUsername ?? "Reminder";
-  const requester = platformUserId
-    ? mention({ platformUserId, displayName })
-    : reminder.requesterUsername ? `@${reminder.requesterUsername}` : displayName;
-  return `${requester} reminder: ${reminder.participant1} vs ${reminder.participant2} kicks off at ${formatKickoff(reminder.startTime)}.`;
+function reminderMessage(reminder: typeof matchReminders.$inferSelect, requester?: typeof users.$inferSelect | null) {
+  const tag = mention({
+    platformUserId: requester?.platformUserId,
+    // the joined row tracks handle changes; the reminder column is a snapshot from when it was set
+    username: requester?.username ?? reminder.requesterUsername,
+    displayName: requester?.displayName ?? reminder.requesterDisplayName ?? reminder.requesterUsername ?? "Reminder"
+  });
+  return `${tag} reminder: ${reminder.participant1} vs ${reminder.participant2} kicks off at ${formatKickoff(reminder.startTime)}.`;
 }

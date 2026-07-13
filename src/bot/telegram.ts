@@ -343,7 +343,7 @@ async function handleIntent(
       rawPrediction: deps.intent.prediction?.raw || deps.text
     });
     const text = result.ok
-      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, platformUserId: ctx.message?.from ? String(ctx.message.from.id) : null, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
+      ? deps.commentary.predictionLocked({ displayName: deps.userDisplayName, platformUserId: ctx.message?.from ? String(ctx.message.from.id) : null, username: ctx.message?.from?.username, participant1: target.match.participant1, participant2: target.match.participant2, score: `${result.prediction.participant1Score}-${result.prediction.participant2Score}` })
       : result.reason;
     await send(text);
     return;
@@ -510,7 +510,7 @@ function withRequesterMention(ctx: Context, text: string) {
   if (!requester || chatType === "private") {
     return text;
   }
-  const requesterMention = mention({ platformUserId: String(requester.id), displayName: displayName(requester) });
+  const requesterMention = mention({ platformUserId: String(requester.id), username: requester.username, displayName: displayName(requester) });
   if (text.startsWith(requesterMention)) {
     return text;
   }
