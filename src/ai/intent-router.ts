@@ -19,6 +19,29 @@ export type IntentContext = {
   }>;
 };
 
+export class AiRateLimitError extends Error {
+  constructor(readonly retryAfterSeconds?: number) {
+    super("AI provider rate limit reached");
+    this.name = "AiRateLimitError";
+  }
+}
+
+export function isRateLimit(error: unknown) {
+  if (error instanceof AiRateLimitError) {
+    return true;
+  }
+  const candidate = error as { status?: number; code?: string } | null;
+  return candidate?.status === 429 || candidate?.code === "rate_limit_exceeded";
+}
+
+// the SDK hands back a Headers object on some paths and a plain object on others
+function retryAfterSeconds(error: unknown) {
+  const headers = (error as { headers?: Headers | Record<string, string> } | null)?.headers;
+  const raw = headers instanceof Headers ? headers.get("retry-after") : headers?.["retry-after"];
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
 export class IntentRouter {
   constructor(private readonly env: Pick<WorkerEnv, "AI_API_KEY">) {}
 
@@ -59,6 +82,10 @@ export class IntentRouter {
       return JSON.parse(outputText) as BotIntent;
     } catch(error) {
       console.log(error)
+      // a rate limit says nothing about what the user meant, so don't answer as if they were unclear
+      if (isRateLimit(error)) {
+        throw new AiRateLimitError(retryAfterSeconds(error));
+      }
       return {
         intent: "unclear",
         confidence: 0,

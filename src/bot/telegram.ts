@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
 import { groupMatches, matches, matchStates, oddsSnapshots } from "../db/schema";
 import type { WorkerEnv } from "../env";
-import { IntentRouter } from "../ai/intent-router";
+import { AiRateLimitError, IntentRouter } from "../ai/intent-router";
 import { AiMessageFormatter } from "../ai/message-formatter";
 import type { MatchRef } from "../ai/intent-schema";
 import { TxLineClient } from "../txline/client";
@@ -111,15 +111,26 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
       ? await groups.loadBotMessage({ groupId: group.id, telegramMessageId: String(message.reply_to_message.message_id) })
       : null;
 
-    const intent = await router.route({
-      text: routedText,
-      replyToBot,
-      predictionsOpen: context.activeGroupMatches.some((row) => row.groupMatch.predictionsOpen === 1),
-      latestBotPrompt: context.group?.latestBotPrompt,
-      repliedBotMessageText: message.reply_to_message && "text" in message.reply_to_message ? message.reply_to_message.text : null,
-      activeMatch: context.activeMatch ? { participant1: context.activeMatch.participant1, participant2: context.activeMatch.participant2 } : null,
-      activeMatches: context.activeGroupMatches.map((row) => ({ participant1: row.match.participant1, participant2: row.match.participant2 }))
-    });
+    let intent: Awaited<ReturnType<IntentRouter["route"]>>;
+    try {
+      intent = await router.route({
+        text: routedText,
+        replyToBot,
+        predictionsOpen: context.activeGroupMatches.some((row) => row.groupMatch.predictionsOpen === 1),
+        latestBotPrompt: context.group?.latestBotPrompt,
+        repliedBotMessageText: message.reply_to_message && "text" in message.reply_to_message ? message.reply_to_message.text : null,
+        activeMatch: context.activeMatch ? { participant1: context.activeMatch.participant1, participant2: context.activeMatch.participant2 } : null,
+        activeMatches: context.activeGroupMatches.map((row) => ({ participant1: row.match.participant1, participant2: row.match.participant2 }))
+      });
+    } catch (error) {
+      if (error instanceof AiRateLimitError) {
+        log("warn", "ai rate limited, skipping intent routing", { groupId: group.id, retryAfterSeconds: error.retryAfterSeconds });
+        // formatting this would spend another call against the same exhausted limit
+        await replyWithoutFormatting(ctx, busyResponse(error.retryAfterSeconds));
+        return;
+      }
+      throw error;
+    }
 
     console.log(intent)
 
@@ -481,6 +492,10 @@ async function handleSetMatchAlert(ctx: Context, deps: HandleIntentDeps, send: S
     : `${formatReminderOffset(offsetMinutes)} before kickoff`;
   await send(`Done. I will remind you ${timingText} for ${filteredFixtures[0].participant1} vs ${filteredFixtures[0].participant2}.`);
   return true;
+}
+
+async function replyWithoutFormatting(ctx: Context, text: string) {
+  return ctx.reply(toTelegramHtml(withRequesterMention(ctx, text)), { parse_mode: "HTML" });
 }
 
 async function reply(ctx: Context, formatter: AiMessageFormatter, text: string, context?: Parameters<AiMessageFormatter["format"]>[1]) {
@@ -955,6 +970,13 @@ function conciseSmalltalkResponse(response?: string | null) {
 
 function gamesOnlyResponse() {
   return "I only focus on the games from here. Mention a fixture, prediction, or leaderboard.";
+}
+
+function busyResponse(retryAfterSeconds?: number) {
+  const wait = retryAfterSeconds && retryAfterSeconds > 1
+    ? ` Give me about ${Math.ceil(retryAfterSeconds)} seconds.`
+    : " Give me a second.";
+  return `I'm catching up on messages right now.${wait} Send that again and I'll pick it up.`;
 }
 
 async function resolveScoreTarget(
