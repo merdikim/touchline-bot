@@ -15,7 +15,6 @@ export type WorkerEnv = AppEnv["Bindings"];
 
 export type PollMatchJob = {
   kind?: "poll_match";
-  groupMatchId: string;
   matchId: string;
   txlineFixtureId: number;
 };

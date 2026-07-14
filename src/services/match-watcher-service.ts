@@ -25,60 +25,59 @@ export class MatchWatcherService {
   }
 
   async enqueueActiveMatches(queue: Queue<MatchPollJob>) {
-    const rows = await this.db
-      .select({ groupMatch: groupMatches, match: matches })
-      .from(groupMatches)
-      .innerJoin(matches, eq(groupMatches.matchId, matches.id))
-      .where(and(eq(groupMatches.status, "active")));
-
-    await Promise.all(rows.map((row) => queue.send({
+    const activeMatches = await this.listActiveMatches();
+    await Promise.all(activeMatches.map((match) => queue.send({
       kind: "poll_match",
-      groupMatchId: row.groupMatch.id,
-      matchId: row.match.id,
-      txlineFixtureId: row.match.txlineFixtureId
+      matchId: match.id,
+      txlineFixtureId: match.txlineFixtureId
     })));
   }
 
   async pollActiveMatches(queue?: Queue<MatchPollJob>) {
-    const rows = await this.db
-      .select({ groupMatch: groupMatches, match: matches })
-      .from(groupMatches)
-      .innerJoin(matches, eq(groupMatches.matchId, matches.id))
-      .where(and(eq(groupMatches.status, "active")));
-
-    for (const row of rows) {
+    const activeMatches = await this.listActiveMatches();
+    for (const match of activeMatches) {
       try {
         await this.poll({
           kind: "poll_match",
-          groupMatchId: row.groupMatch.id,
-          matchId: row.match.id,
-          txlineFixtureId: row.match.txlineFixtureId
+          matchId: match.id,
+          txlineFixtureId: match.txlineFixtureId
         }, queue);
       } catch (error) {
         log("error", "active match poll failed", {
-          groupMatchId: row.groupMatch.id,
-          matchId: row.match.id,
-          txlineFixtureId: row.match.txlineFixtureId,
+          matchId: match.id,
+          txlineFixtureId: match.txlineFixtureId,
           error: error instanceof Error ? error.message : "Unknown error"
         });
       }
     }
   }
 
-  async poll(job: PollMatchJob, queue?: Queue<MatchPollJob>) {
-    const [row] = await this.db
-      .select({ groupMatch: groupMatches, match: matches })
+  private async listActiveMatches() {
+    const rows = await this.db
+      .select({ id: matches.id, txlineFixtureId: matches.txlineFixtureId })
       .from(groupMatches)
       .innerJoin(matches, eq(groupMatches.matchId, matches.id))
-      .where(eq(groupMatches.id, job.groupMatchId))
-      .limit(1);
-    if (!row) {
+      .where(eq(groupMatches.status, "active"));
+
+    return [...new Map(rows.map((row) => [row.id, row])).values()];
+  }
+
+  async poll(job: PollMatchJob, queue?: Queue<MatchPollJob>) {
+    const [match] = await this.db.select().from(matches).where(eq(matches.id, job.matchId)).limit(1);
+    if (!match) {
+      return;
+    }
+    const activeGroupMatches = await this.db
+      .select()
+      .from(groupMatches)
+      .where(and(eq(groupMatches.matchId, job.matchId), eq(groupMatches.status, "active")));
+    if (activeGroupMatches.length === 0) {
       return;
     }
 
     const previous = await this.db.select().from(matchStates).where(eq(matchStates.matchId, job.matchId)).limit(1);
-    const next = isDemoMatch(row.match)
-      ? demoScoreSnapshot(row.match.txlineFixtureId, row.match.startTime)
+    const next = isDemoMatch(match)
+      ? demoScoreSnapshot(match.txlineFixtureId, match.startTime)
       : await this.txline.getScoreSnapshot(job.txlineFixtureId);
     await this.upsertState(job.matchId, next);
 
@@ -87,13 +86,13 @@ export class MatchWatcherService {
       ? previousState.participant1Score !== next.participant1Score || previousState.participant2Score !== next.participant2Score
       : next.participant1Score !== 0 || next.participant2Score !== 0;
     const final = isFinalState(next);
-    const started = row.groupMatch.predictionsOpen === 1 && !final && isMatchStarted(row.match.startTime, next);
-    if (!started && !changedScore && !final) {
+    const matchStarted = !final && isMatchStarted(match.startTime, next);
+    const anyStarted = matchStarted && activeGroupMatches.some((groupMatch) => groupMatch.predictionsOpen === 1);
+    if (!anyStarted && !changedScore && !final) {
       return;
     }
 
-    const groupId = row.groupMatch.groupId.replace("telegram_group_", "");
-    if (started) {
+    if (anyStarted) {
       await this.db.insert(matchEvents).values({
         id: newId("match_event"),
         matchId: job.matchId,
@@ -102,15 +101,7 @@ export class MatchWatcherService {
         txlineReference: next.seq ? String(next.seq) : null,
         verified: next.confirmed ? 1 : 0
       });
-      await this.db.update(groupMatches).set({ predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
-      await this.safeSendHumanized(groupId, this.commentary.matchStarted({
-        participant1: row.match.participant1,
-        participant2: row.match.participant2,
-        state: next.displayState ?? next.gameState
-      }), { kind: "match_started" });
     }
-
-    const entries = await this.leaderboard.calculate(job.groupMatchId, job.matchId, row.groupMatch.baselineOddsSummary);
     if (changedScore || final) {
       await this.db.insert(matchEvents).values({
         id: newId("match_event"),
@@ -120,9 +111,44 @@ export class MatchWatcherService {
         txlineReference: next.seq ? String(next.seq) : null,
         verified: next.confirmed ? 1 : 0
       });
+    }
+
+    for (const groupMatch of activeGroupMatches) {
+      await this.notifyGroup({ groupMatch, match, previousState, next, changedScore, final, matchStarted, queue });
+    }
+  }
+
+  private async notifyGroup(params: {
+    groupMatch: typeof groupMatches.$inferSelect;
+    match: typeof matches.$inferSelect;
+    previousState: typeof matchStates.$inferSelect | null;
+    next: NormalizedScoreState;
+    changedScore: boolean;
+    final: boolean;
+    matchStarted: boolean;
+    queue?: Queue<MatchPollJob>;
+  }) {
+    const { groupMatch, match, previousState, next, changedScore, final, matchStarted, queue } = params;
+    const started = groupMatch.predictionsOpen === 1 && matchStarted;
+    if (!started && !changedScore && !final) {
+      return;
+    }
+
+    const groupId = groupMatch.groupId.replace("telegram_group_", "");
+    if (started) {
+      await this.db.update(groupMatches).set({ predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, groupMatch.id));
+      await this.safeSendHumanized(groupId, this.commentary.matchStarted({
+        participant1: match.participant1,
+        participant2: match.participant2,
+        state: next.displayState ?? next.gameState
+      }), { kind: "match_started" });
+    }
+
+    const entries = await this.leaderboard.calculate(groupMatch.id, match.id, groupMatch.baselineOddsSummary);
+    if (changedScore || final) {
       await this.safeSendHumanized(groupId, this.commentary.matchChange({
-        participant1: row.match.participant1,
-        participant2: row.match.participant2,
+        participant1: match.participant1,
+        participant2: match.participant2,
         previous: previousState,
         next: {
           participant1Score: next.participant1Score,
@@ -135,8 +161,8 @@ export class MatchWatcherService {
     }
     if (final) {
       const winnerMessage = this.commentary.matchWinner({
-        participant1: row.match.participant1,
-        participant2: row.match.participant2,
+        participant1: match.participant1,
+        participant2: match.participant2,
         participant1Score: next.participant1Score,
         participant2Score: next.participant2Score
       });
@@ -148,7 +174,7 @@ export class MatchWatcherService {
         await this.safeSendHumanized(groupId, this.commentary.perfectPickWinner(perfectEntries[0]), { kind: "perfect_pick_winner", parseMode: "HTML" });
       }
       if (perfectEntries.length === 0) {
-        await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: row.groupMatch.groupId }, { delaySeconds: 300 });
+        await queue?.send({ kind: "no_perfect_pick_follow_up", groupId: groupMatch.groupId }, { delaySeconds: 300 });
       }
     }
     if (changedScore || final) {
@@ -156,7 +182,7 @@ export class MatchWatcherService {
     }
 
     if (final) {
-      await this.db.update(groupMatches).set({ status: "final", predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, job.groupMatchId));
+      await this.db.update(groupMatches).set({ status: "final", predictionsOpen: 0, updatedAt: new Date().toISOString() }).where(eq(groupMatches.id, groupMatch.id));
     }
   }
 

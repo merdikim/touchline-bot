@@ -23,7 +23,7 @@ export function createApp() {
     const db = createDb(env);
     const watcher = new MatchWatcherService(db, new TxLineClient(env), env);
     const body = await c.req.json<Partial<PollMatchJob>>().catch((): Partial<PollMatchJob> => ({}));
-    if (body.groupMatchId && body.matchId && body.txlineFixtureId) {
+    if (body.matchId && body.txlineFixtureId) {
       await watcher.poll(body as PollMatchJob, env.MATCH_POLL_QUEUE);
     } else {
       await watcher.pollActiveMatches(env.MATCH_POLL_QUEUE);
