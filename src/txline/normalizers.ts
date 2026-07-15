@@ -1,4 +1,4 @@
-import type { NormalizedFixture, NormalizedScoreState, OddsSummary } from "./types";
+import type { NormalizedFixture, NormalizedScoreState, OddsMarket1x2, OddsSummary } from "./types";
 
 type JsonObject = Record<string, unknown>;
 
@@ -210,17 +210,139 @@ export function normalizeScoreState(fixtureId: number, raw: unknown): Normalized
 }
 
 export function normalizeOddsSummary(raw: unknown, participant1: string, participant2: string): OddsSummary {
-  const obj = unwrapObject(raw);
-  const favorite = pickString(obj, ["favorite", "favoredParticipant", "marketFavorite"]);
-  const underdog = pickString(obj, ["underdog", "marketUnderdog"]);
+  const market = extract1x2Market(raw);
+
+  // the provider may also send these directly on wrapper objects; the parsed market wins when present
+  const obj = Array.isArray(raw) ? {} : asObject(raw);
+  const explicitFavorite = pickString(obj, ["favorite", "favoredParticipant", "marketFavorite"]);
   const movement = pickString(obj, ["movement", "marketMovement"], "unknown") ?? "unknown";
-  const confidence = pickString(obj, ["confidence"], "low") ?? "low";
+  const explicitConfidence = pickString(obj, ["confidence"]);
+
+  const favorite = market
+    ? market.prob1 >= market.prob2 ? participant1 : participant2
+    : explicitFavorite || undefined;
+  const underdog = favorite === participant1 ? participant2 : favorite === participant2 ? participant1 : undefined;
+  const confidence = market ? confidenceFromMarket(market) : explicitConfidence;
 
   return {
-    favorite: favorite || undefined,
-    underdog: underdog || (favorite === participant1 ? participant2 : favorite === participant2 ? participant1 : undefined),
+    favorite,
+    underdog,
     movement: movement === "toward_participant1" || movement === "toward_participant2" || movement === "stable" ? movement : "unknown",
     confidence: confidence === "medium" || confidence === "high" ? confidence : "low",
+    market,
     raw
   };
+}
+
+function extract1x2Market(raw: unknown): OddsMarket1x2 | null {
+  const market = find1x2Market(unwrapOddsMarkets(raw));
+  if (!market) {
+    return null;
+  }
+
+  const names = (getValue(market, "PriceNames") ?? getValue(market, "priceNames") ?? []) as unknown[];
+  const lowerNames = names.map((name) => String(name).toLowerCase());
+  const prices = readNumberList(getValue(market, "Prices") ?? getValue(market, "prices"));
+  const pct = readNumberList(getValue(market, "Pct") ?? getValue(market, "pct") ?? getValue(market, "Percentages"));
+
+  const i1 = indexOfName(lowerNames, ["part1", "participant1", "home", "p1", "1"], 0);
+  const iX = indexOfName(lowerNames, ["draw", "x", "tie"], 1);
+  const i2 = indexOfName(lowerNames, ["part2", "participant2", "away", "p2", "2"], 2);
+
+  // implied probabilities: prefer the provider's Pct, otherwise derive from decimal prices
+  let p1 = pct[i1];
+  let pX = pct[iX];
+  let p2 = pct[i2];
+  if (![p1, pX, p2].every((value) => Number.isFinite(value)) || p1 + pX + p2 <= 0) {
+    // prices are decimal odds x1000 (1617 => 1.617), so implied = 1 / decimal = 1000 / price
+    p1 = prices[i1] > 0 ? 1000 / prices[i1] : NaN;
+    pX = prices[iX] > 0 ? 1000 / prices[iX] : NaN;
+    p2 = prices[i2] > 0 ? 1000 / prices[i2] : NaN;
+  }
+
+  const sum = p1 + pX + p2;
+  if (!Number.isFinite(sum) || sum <= 0) {
+    return null;
+  }
+
+  return {
+    prob1: (p1 / sum) * 100,
+    probDraw: (pX / sum) * 100,
+    prob2: (p2 / sum) * 100,
+    price1: decimalPrice(prices[i1]),
+    priceDraw: decimalPrice(prices[iX]),
+    price2: decimalPrice(prices[i2])
+  };
+}
+
+function unwrapOddsMarkets(raw: unknown): JsonObject[] {
+  if (Array.isArray(raw)) {
+    return raw.map(asObject);
+  }
+  const obj = asObject(raw);
+  for (const key of ["markets", "odds", "data", "items", "results", "snapshot"]) {
+    const value = obj[key];
+    if (Array.isArray(value)) {
+      return value.map(asObject);
+    }
+  }
+  // a single market object handed back on its own
+  if (getValue(obj, "Prices") ?? getValue(obj, "SuperOddsType")) {
+    return [obj];
+  }
+  return [];
+}
+
+function find1x2Market(markets: JsonObject[]): JsonObject | undefined {
+  return markets.find((market) => {
+    const type = (pickString(market, ["SuperOddsType", "superOddsType", "type", "marketType"], "") ?? "").toUpperCase();
+    if (type.includes("1X2") || type.includes("PARTICIPANT_RESULT")) {
+      return true;
+    }
+    const names = getValue(market, "PriceNames") ?? getValue(market, "priceNames");
+    const prices = getValue(market, "Prices") ?? getValue(market, "prices");
+    const hasDraw = Array.isArray(names) && names.map((name) => String(name).toLowerCase()).includes("draw");
+    return hasDraw && Array.isArray(prices) && prices.length === 3;
+  });
+}
+
+function readNumberList(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => {
+    if (typeof item === "number") {
+      return item;
+    }
+    if (typeof item === "string" && item.trim() && Number.isFinite(Number(item))) {
+      return Number(item);
+    }
+    return NaN;
+  });
+}
+
+function indexOfName(names: string[], candidates: string[], fallback: number): number {
+  for (const candidate of candidates) {
+    const index = names.indexOf(candidate);
+    if (index >= 0) {
+      return index;
+    }
+  }
+  return fallback;
+}
+
+function decimalPrice(price: number | undefined): number | undefined {
+  return typeof price === "number" && Number.isFinite(price) && price > 0 ? Math.round((price / 1000) * 100) / 100 : undefined;
+}
+
+function confidenceFromMarket(market: OddsMarket1x2): "low" | "medium" | "high" {
+  const favProb = Math.max(market.prob1, market.prob2);
+  const gap = Math.abs(market.prob1 - market.prob2);
+  if (favProb >= 60 || gap >= 30) {
+    return "high";
+  }
+  if (favProb >= 45 || gap >= 12) {
+    return "medium";
+  }
+  return "low";
 }

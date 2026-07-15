@@ -17,6 +17,7 @@ export default {
     const reminders = new ReminderService(db, env);
     ctx.waitUntil(Promise.all([
       watcher.pollActiveMatches(env.MATCH_POLL_QUEUE),
+      watcher.pollScheduledOdds(),
       reminders.sendDue()
     ]));
   },

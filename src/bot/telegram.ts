@@ -318,6 +318,57 @@ async function handleIntent(
     return;
   }
 
+  if (deps.intent.intent === "get_match_info") {
+    const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
+    if (target.kind === "none") {
+      await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : `Mention me with a fixture first, like: ${deps.commentary.mentionExample("tell me about Brazil vs France")}`);
+      return;
+    }
+    if (target.kind === "ambiguous") {
+      await send(deps.commentary.ambiguous(target.fixtures.map((fixture) => ({
+        participant1: fixture.participant1,
+        participant2: fixture.participant2,
+        competition: fixture.competition,
+        startTime: formatKickoff(fixture.startTime)
+      }))));
+      return;
+    }
+
+    const [score, odds] = await Promise.all([
+      deps.txline.getScoreSnapshot(target.fixtureId).catch(() => null),
+      deps.txline.getOddsSnapshot(target.fixtureId, undefined, target.participant1, target.participant2).catch(() => null)
+    ]);
+    if (target.matchId && score) {
+      await upsertScoreState(deps.db, target.matchId, score);
+    }
+    if (target.matchId && odds) {
+      await deps.db.insert(oddsSnapshots).values({
+        id: newId("odds"),
+        matchId: target.matchId,
+        txlineTs: Date.now(),
+        summary: JSON.stringify(odds),
+        rawOddsSnapshot: JSON.stringify(odds.raw)
+      });
+    }
+
+    await send(deps.commentary.matchInfo({
+      participant1: target.participant1,
+      participant2: target.participant2,
+      competition: target.competition,
+      kickoff: formatKickoff(target.startTime),
+      score: score ? {
+        p1: score.participant1Score,
+        p2: score.participant2Score,
+        state: score.displayState ?? score.gameState,
+        confirmed: score.confirmed,
+        started: isScoreStarted(score, target.startTime),
+        final: isScoreFinal(score)
+      } : null,
+      odds
+    }));
+    return;
+  }
+
   if (deps.intent.intent === "unclear") {
     await send(deps.intent.clarificationQuestion ?? "Do you want a demo, a leaderboard, a prediction, or the score?", "unclear");
     return;
@@ -376,24 +427,36 @@ async function handleIntent(
   }
 
   if (deps.intent.intent === "get_odds_commentary") {
-    const target = resolveActiveGroupMatchTarget(deps.intent.match, activeGroupMatches);
+    const target = await resolveScoreTarget(deps.intent.match, activeGroupMatches, deps.txline);
     if (target.kind === "none") {
-      await send(`Mention me with a fixture first, like: ${deps.commentary.mentionExample("create a leaderboard for Brazil vs France")}`);
+      await send(deps.intent.match.team1 || deps.intent.match.team2 ? deps.commentary.noMatch() : `Mention me with a fixture first, like: ${deps.commentary.mentionExample("odds for Brazil vs France")}`);
       return;
     }
     if (target.kind === "ambiguous") {
-      await send(activeMatchClarification(target.matches, deps.commentary));
+      await send(deps.commentary.ambiguous(target.fixtures.map((fixture) => ({
+        participant1: fixture.participant1,
+        participant2: fixture.participant2,
+        competition: fixture.competition,
+        startTime: formatKickoff(fixture.startTime)
+      }))));
       return;
     }
-    const odds = await deps.txline.getOddsSnapshot(target.match.txlineFixtureId, undefined, target.match.participant1, target.match.participant2);
-    await deps.db.insert(oddsSnapshots).values({
-      id: newId("odds"),
-      matchId: target.match.id,
-      txlineTs: Date.now(),
-      summary: JSON.stringify(odds),
-      rawOddsSnapshot: JSON.stringify(odds.raw)
-    });
-    await send(deps.commentary.odds(odds));
+    const odds = await deps.txline.getOddsSnapshot(target.fixtureId, undefined, target.participant1, target.participant2);
+    if (target.matchId) {
+      await deps.db.insert(oddsSnapshots).values({
+        id: newId("odds"),
+        matchId: target.matchId,
+        txlineTs: Date.now(),
+        summary: JSON.stringify(odds),
+        rawOddsSnapshot: JSON.stringify(odds.raw)
+      });
+    }
+    await send(deps.commentary.odds({
+      participant1: target.participant1,
+      participant2: target.participant2,
+      competition: target.competition,
+      summary: odds
+    }));
     return;
   }
 
@@ -885,6 +948,23 @@ function isLiveStatusQuestion(text: string) {
   return /\b(e?score|live|now|current(?:ly)?|status|result|winning|who'?s\s+up|what'?s\s+happening|full\s*time|half\s*time|ft|ht)\b/i.test(text);
 }
 
+function isScoreFinal(score: { gameState?: string; displayState?: string }) {
+  const state = `${score.gameState ?? ""} ${score.displayState ?? ""}`.toLowerCase();
+  return /\b(full|final|ft|full[_ -]?time|ended|complete|completed)\b/.test(state);
+}
+
+function isScoreStarted(score: { gameState?: string; displayState?: string }, startTime: string) {
+  if (isScoreFinal(score)) {
+    return true;
+  }
+  const state = `${score.gameState ?? ""} ${score.displayState ?? ""}`.toLowerCase();
+  if (/\b(live|in[_ -]?play|started|kick[_ -]?off|first half|second half|1h|2h|half[_ -]?time|ht)\b/.test(state)) {
+    return true;
+  }
+  const kickoff = new Date(startTime).getTime();
+  return Number.isFinite(kickoff) && Date.now() >= kickoff;
+}
+
 function parseReminderTiming(text: string): { kind: "before" | "in"; minutes: number } | { kind: "default" } {
   const normalized = text.toLowerCase();
   const inMatch = normalized.match(/\bin\s+(.+?)(?:\s+(?:about|for|before)\b|$)/);
@@ -984,7 +1064,7 @@ async function resolveScoreTarget(
   activeGroupMatches: ActiveGroupMatchRow[],
   txline: TxLineClient
 ): Promise<
-  | { kind: "selected"; fixtureId: number; participant1: string; participant2: string; competition?: string | null; matchId?: string }
+  | { kind: "selected"; fixtureId: number; participant1: string; participant2: string; competition?: string | null; startTime: string; matchId?: string }
   | { kind: "ambiguous"; fixtures: MatchOption[] }
   | { kind: "none" }
 > {
@@ -997,13 +1077,13 @@ async function resolveScoreTarget(
       return { kind: "ambiguous", fixtures: activeGroupMatches.map((row) => row.match) };
     }
     const active = activeGroupMatches[0];
-    return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id };
+    return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, startTime: active.match.startTime, matchId: active.match.id };
   }
 
   const activeMatchesForRef = activeGroupMatches.filter((row) => matchRefMatchesFixture(match, row.match));
   if (activeMatchesForRef.length === 1) {
     const active = activeMatchesForRef[0];
-    return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, matchId: active.match.id };
+    return { kind: "selected", fixtureId: active.match.txlineFixtureId, participant1: active.match.participant1, participant2: active.match.participant2, competition: active.match.competition, startTime: active.match.startTime, matchId: active.match.id };
   }
   if (activeMatchesForRef.length > 1) {
     return { kind: "ambiguous", fixtures: activeMatchesForRef.map((row) => row.match) };
@@ -1020,7 +1100,7 @@ async function resolveScoreTarget(
     })) } : { kind: "none" };
   }
 
-  return { kind: "selected", fixtureId: selected.fixtureId, participant1: selected.participant1, participant2: selected.participant2, competition: selected.competition };
+  return { kind: "selected", fixtureId: selected.fixtureId, participant1: selected.participant1, participant2: selected.participant2, competition: selected.competition, startTime: selected.startTime };
 }
 
 async function upsertScoreState(db: Db, matchId: string, score: { gameState?: string; displayState?: string; participant1Score: number; participant2Score: number; seq?: number; timestamp?: number; confirmed?: boolean; raw: unknown }) {

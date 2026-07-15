@@ -21,10 +21,22 @@ export type NormalizedScoreState = {
   raw: unknown;
 };
 
+export type OddsMarket1x2 = {
+  // implied probabilities (percentages, normalized to sum ~100)
+  prob1: number;
+  probDraw: number;
+  prob2: number;
+  // decimal odds when available
+  price1?: number;
+  priceDraw?: number;
+  price2?: number;
+};
+
 export type OddsSummary = {
   favorite?: string;
   underdog?: string;
   movement?: "toward_participant1" | "toward_participant2" | "stable" | "unknown";
   confidence?: "low" | "medium" | "high";
+  market?: OddsMarket1x2 | null;
   raw: unknown;
 };

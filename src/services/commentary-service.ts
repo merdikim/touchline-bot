@@ -1,5 +1,10 @@
 import type { LeaderboardEntry } from "./leaderboard-service";
+import type { OddsMarket1x2, OddsSummary } from "../txline/types";
 import { mention } from "../bot/mentions";
+
+function pct(value: number) {
+  return `~${Math.round(value)}%`;
+}
 
 export class CommentaryService {
   constructor(private readonly botUsername: string) {}
@@ -52,18 +57,80 @@ export class CommentaryService {
     return `${input.participant1} ${input.participant1Score}-${input.participant2Score} ${input.participant2}${input.competition ? `\n${input.competition}` : ""}${input.state ? `\n${input.state}` : ""}\n\n${input.confirmed ? "Confirmed." : "Live, not confirmed yet."}`;
   }
 
-  odds(input: { favorite?: string; underdog?: string; movement?: string }) {
-    const parts = [];
-    if (input.favorite) {
-      parts.push(`${input.favorite} look like the market favorite right now.`);
+  odds(input: { participant1: string; participant2: string; competition?: string | null; summary: OddsSummary }) {
+    const header = `${input.participant1} vs ${input.participant2}${input.competition ? ` - ${input.competition}` : ""}`;
+    const market = input.summary.market;
+    if (!market) {
+      const parts = [];
+      if (input.summary.favorite) {
+        parts.push(`${input.summary.favorite} look like the market favorite right now.`);
+      }
+      return `${header}\n${parts.join(" ") || "No clear market read from the latest odds snapshot."}\n\nNo advice here, just match context.`;
     }
-    if (input.underdog) {
-      parts.push(`${input.underdog} would be the bold pick.`);
+
+    const favIsP1 = market.prob1 >= market.prob2;
+    const favorite = favIsP1 ? input.participant1 : input.participant2;
+    const underdog = favIsP1 ? input.participant2 : input.participant1;
+    const favProb = favIsP1 ? market.prob1 : market.prob2;
+    const undProb = favIsP1 ? market.prob2 : market.prob1;
+    const read = Math.abs(market.prob1 - market.prob2) < 4
+      ? `Too close to call: ${input.participant1} ${pct(market.prob1)}, ${input.participant2} ${pct(market.prob2)}, draw ${pct(market.probDraw)}.`
+      : `${favorite} favorites (${pct(favProb)}). ${underdog} ${pct(undProb)}, draw ${pct(market.probDraw)}.`;
+    return `${header}\n${read}\n\nNo advice here, just match context.`;
+  }
+
+  matchInfo(input: {
+    participant1: string;
+    participant2: string;
+    competition?: string | null;
+    kickoff: string;
+    score?: { p1: number; p2: number; state?: string | null; confirmed?: boolean | null; started: boolean; final: boolean } | null;
+    odds?: OddsSummary | null;
+  }) {
+    const lines = [`${input.participant1} vs ${input.participant2}${input.competition ? ` - ${input.competition}` : ""}`];
+
+    if (input.score?.final) {
+      lines.push(`Full-time: ${input.participant1} ${input.score.p1}-${input.score.p2} ${input.participant2}.`);
+    } else if (input.score?.started) {
+      lines.push(`Live: ${input.participant1} ${input.score.p1}-${input.score.p2} ${input.participant2}${input.score.state ? ` (${input.score.state})` : ""}.${input.score.confirmed ? "" : " Not confirmed yet."}`);
+    } else {
+      lines.push(`Kicks off ${input.kickoff}.`);
     }
-    if (input.movement && input.movement !== "unknown") {
-      parts.push(`Market moved ${input.movement.replaceAll("_", " ")}.`);
+
+    const market = input.odds?.market;
+    if (market) {
+      const favIsP1 = market.prob1 >= market.prob2;
+      const favorite = favIsP1 ? input.participant1 : input.participant2;
+      const favProb = favIsP1 ? market.prob1 : market.prob2;
+      lines.push(Math.abs(market.prob1 - market.prob2) < 4
+        ? `Market read: too close to call (${input.participant1} ${pct(market.prob1)}, ${input.participant2} ${pct(market.prob2)}).`
+        : `Market read: ${favorite} favorites (${pct(favProb)}).`);
     }
-    return `${parts.join(" ") || "No clear market momentum from the latest odds snapshot."}\n\nNo advice here, just match context.`;
+
+    lines.push("Scores and odds verified by TxLINE.");
+    return lines.join("\n");
+  }
+
+  oddsMovement(input: {
+    participant1: string;
+    participant2: string;
+    competition?: string | null;
+    previous: OddsMarket1x2;
+    next: OddsMarket1x2;
+  }) {
+    const header = `Market update: ${input.participant1} vs ${input.participant2}`;
+    const nextFavIsP1 = input.next.prob1 >= input.next.prob2;
+    const prevFavIsP1 = input.previous.prob1 >= input.previous.prob2;
+    const nextFav = nextFavIsP1 ? input.participant1 : input.participant2;
+    const nextUnderdog = nextFavIsP1 ? input.participant2 : input.participant1;
+    const nextFavProb = nextFavIsP1 ? input.next.prob1 : input.next.prob2;
+    const prevSameSideProb = nextFavIsP1 ? input.previous.prob1 : input.previous.prob2;
+
+    const line = nextFavIsP1 !== prevFavIsP1
+      ? `Momentum has swung to ${nextFav} (${pct(nextFavProb)}), now ahead of ${nextUnderdog}.`
+      : `${nextFav} ${nextFavProb >= prevSameSideProb ? "firmed to" : "eased to"} ${pct(nextFavProb)} (from ${pct(prevSameSideProb)}).`;
+
+    return `${header}\n${line}\n\nNo advice here, just match context.`;
   }
 
   goalUpdate(input: { participant1: string; participant2: string; p1: number; p2: number; leader?: string }) {

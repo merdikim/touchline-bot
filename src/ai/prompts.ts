@@ -19,6 +19,7 @@ export function buildIntentPrompt(context: IntentContext): string {
     "- create_group_match: user wants to create/start/open a leaderboard or prediction round for a fixture.",
     "- submit_prediction: user gives a score prediction.",
     "- get_match_status: user asks for live score, live status, match state, or what happened in an active/completed match.",
+    "- get_match_info: user asks for everything/all info/full details/a rundown about a specific fixture, or asks 'tell me about X vs Y' without a narrower ask like just the score or just the odds. Combines fixture details, kickoff, status, score, and market read.",
     "- get_leaderboard: user asks who is winning, standings, points, table, or leaderboard.",
     "- get_odds_commentary: user asks who has momentum, market movement, favorite/underdog context, or bold pick context.",
     "- get_verification: user asks to verify, prove, source, confirm, or check TxLINE truth.",

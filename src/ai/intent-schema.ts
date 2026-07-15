@@ -2,6 +2,7 @@ export type BotIntentName =
   | "create_group_match"
   | "submit_prediction"
   | "get_match_status"
+  | "get_match_info"
   | "get_leaderboard"
   | "get_odds_commentary"
   | "get_verification"
@@ -55,6 +56,7 @@ export const intentJsonSchema = {
         "create_group_match",
         "submit_prediction",
         "get_match_status",
+        "get_match_info",
         "get_leaderboard",
         "get_odds_commentary",
         "get_verification",

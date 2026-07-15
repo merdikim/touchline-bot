@@ -1,8 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { createDb } from "../db/client";
-import { groupMatches, matchEvents, matches, matchStates } from "../db/schema";
+import { groupMatches, matchEvents, matches, matchStates, oddsSnapshots } from "../db/schema";
 import type { TxLineClient } from "../txline/client";
-import type { NormalizedScoreState } from "../txline/types";
+import type { NormalizedScoreState, OddsMarket1x2, OddsSummary } from "../txline/types";
 import type { MatchPollJob, PollMatchJob, WorkerEnv } from "../env";
 import { newId } from "../utils/ids";
 import { formatKickoff } from "../utils/dates";
@@ -50,6 +50,84 @@ export class MatchWatcherService {
         });
       }
     }
+  }
+
+  // Push odds updates for pre-kickoff games that a group is following (has an active leaderboard for).
+  async pollScheduledOdds() {
+    const rows = await this.db
+      .select({ match: matches })
+      .from(groupMatches)
+      .innerJoin(matches, eq(groupMatches.matchId, matches.id))
+      .where(eq(groupMatches.status, "active"));
+
+    const uniqueMatches = [...new Map(rows.map((row) => [row.match.id, row.match])).values()];
+    for (const match of uniqueMatches) {
+      if (isDemoMatch(match) || hasKickedOff(match.startTime)) {
+        continue;
+      }
+      try {
+        await this.pollMatchOdds(match);
+      } catch (error) {
+        log("error", "scheduled odds poll failed", {
+          matchId: match.id,
+          txlineFixtureId: match.txlineFixtureId,
+          error: error instanceof Error ? error.message : "Unknown error"
+        });
+      }
+    }
+  }
+
+  private async pollMatchOdds(match: typeof matches.$inferSelect) {
+    const next = await this.txline.getOddsSnapshot(match.txlineFixtureId, undefined, match.participant1, match.participant2);
+    if (!next.market) {
+      return;
+    }
+
+    const [prevRow] = await this.db
+      .select()
+      .from(oddsSnapshots)
+      .where(eq(oddsSnapshots.matchId, match.id))
+      .orderBy(desc(oddsSnapshots.createdAt))
+      .limit(1);
+    const previous = prevRow ? safeParseOddsSummary(prevRow.summary) : null;
+
+    // first snapshot for this match just establishes a baseline to compare against next time
+    if (!previous?.market) {
+      await this.storeOddsSnapshot(match.id, next);
+      return;
+    }
+
+    if (!oddsMovedEnough(previous.market, next.market)) {
+      return;
+    }
+
+    // store the new snapshot so the next comparison is measured against what we just announced
+    await this.storeOddsSnapshot(match.id, next);
+
+    const groupRows = await this.db
+      .select()
+      .from(groupMatches)
+      .where(and(eq(groupMatches.matchId, match.id), eq(groupMatches.status, "active")));
+    for (const groupMatch of groupRows) {
+      const groupId = groupMatch.groupId.replace("telegram_group_", "");
+      await this.safeSendHumanized(groupId, this.commentary.oddsMovement({
+        participant1: match.participant1,
+        participant2: match.participant2,
+        competition: match.competition,
+        previous: previous.market,
+        next: next.market
+      }), { kind: "odds_update" });
+    }
+  }
+
+  private async storeOddsSnapshot(matchId: string, odds: OddsSummary) {
+    await this.db.insert(oddsSnapshots).values({
+      id: newId("odds"),
+      matchId,
+      txlineTs: Date.now(),
+      summary: JSON.stringify(odds),
+      rawOddsSnapshot: JSON.stringify(odds.raw)
+    });
   }
 
   private async listActiveMatches() {
@@ -258,6 +336,34 @@ function isMatchStarted(startTime: string, score: { gameState?: string; displayS
 function isFinalState(score: { gameState?: string; displayState?: string }) {
   const state = `${score.gameState ?? ""} ${score.displayState ?? ""}`.toLowerCase();
   return /\b(full|final|ft|full[_ -]?time|ended|complete|completed)\b/.test(state);
+}
+
+function hasKickedOff(startTime: string) {
+  const kickoff = new Date(startTime).getTime();
+  // treat an unusable kickoff as already started so we don't push pre-game odds we can't time
+  return !Number.isFinite(kickoff) || Date.now() >= kickoff;
+}
+
+// notify on a genuine favorite flip, or when either side's implied probability moves >= 8 points
+function oddsMovedEnough(previous: OddsMarket1x2, next: OddsMarket1x2) {
+  const prevFavIsP1 = previous.prob1 >= previous.prob2;
+  const nextFavIsP1 = next.prob1 >= next.prob2;
+  if (prevFavIsP1 !== nextFavIsP1 && Math.abs(next.prob1 - next.prob2) >= 4) {
+    return true;
+  }
+  const move = Math.max(Math.abs(next.prob1 - previous.prob1), Math.abs(next.prob2 - previous.prob2));
+  return move >= 8;
+}
+
+function safeParseOddsSummary(raw?: string | null): OddsSummary | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as OddsSummary;
+  } catch {
+    return null;
+  }
 }
 
 function isDemoMatch(match: typeof matches.$inferSelect) {
