@@ -1,16 +1,6 @@
 # Touchline
 
-**A Telegram football agent that turns any group chat into a prediction league — with every scoreline backed by a cryptographic proof anchored on Solana.**
-
-Built for the TxODDS *Consumer and Fan Experiences* track.
-
----
-
-## The problem
-
-Every football group chat already runs a prediction league. It runs on memory, screenshots, and arguing.
-
-Someone calls 2-1. Someone else swears they said 2-1 first. The match ends and nobody agrees on who won, because the "source of truth" was whoever shouted loudest with a livescore app open. The social layer of football fandom has no referee.
+**A football agent that turns any group chat into a fun league experience — with every scoreline backed by a cryptographic proof anchored on Solana.**
 
 ## What Touchline does
 
@@ -22,7 +12,7 @@ Invite it to a group, mention it in plain English, and it runs the league for yo
 - **Odds-aware commentary** — implied probabilities and pre-match odds movement, as context and banter. Never as advice.
 - **Verifiable scores** — ask `@touchline verify the score` and it returns a real Merkle proof, not a promise.
 
-No wallets. No betting. No payments, staking, wagering, or payouts. Touchline is a social layer: points, bragging rights, and provable scorelines.
+No wallets. No betting. No staking, wagering, or payouts. Touchline is a social layer: points, bragging rights, and provable scorelines.
 
 ## Why this needs TxLINE
 
@@ -79,7 +69,7 @@ Telegram ──webhook──▶ Cloudflare Worker (Hono + grammY)
                      Cloudflare D1 (Drizzle)
                             ▲
                             │
-              Cron (1 min) ─┴─ live scores, odds movement, reminders
+              live scores, odds movement, reminders
 ```
 
 - **TypeScript Cloudflare Worker** — Hono HTTP, grammY Telegram handling
@@ -101,41 +91,11 @@ Fill `.dev.vars`:
 
 ```txt
 TELEGRAM_BOT_TOKEN=
-TELEGRAM_BOT_USERNAME=touchline
+TELEGRAM_BOT_USERNAME=touch_line_bot
 AI_API_KEY=
-TXLINE_BASE_URL=https://txline-dev.txodds.com
+TXLINE_BASE_URL=https://txline.txodds.com
 TXLINE_JWT=
 TXLINE_API_TOKEN=
-NODE_ENV=development
-```
-
-### 1. Telegram bot
-
-1. Message [@BotFather](https://t.me/BotFather), run `/newbot`, pick a name and username.
-2. Put the token in `TELEGRAM_BOT_TOKEN` and the username (no `@`) in `TELEGRAM_BOT_USERNAME`.
-3. Disable privacy mode in BotFather so prediction messages like `Brazil 2-1` are visible without a mention.
-
-### 2. TxLINE credentials (free World Cup tier)
-
-TxLINE access is gated by an on-chain subscription. The setup script subscribes to the free World Cup service level on devnet, opens a guest JWT session, signs the activation payload with your Solana keypair, activates the API token, and runs a fixtures smoke test:
-
-```sh
-pnpm setup:txline -- --network devnet --keypair ~/.config/solana/id.json
-```
-
-Or pass the key directly — prefer the env var so it stays out of shell history:
-
-```sh
-SOLANA_PRIVATE_KEY='[1,2,...]' pnpm setup:txline -- --network devnet
-```
-
-Accepts a base58 secret key, a Solana JSON byte array, or comma-separated bytes. Useful options:
-
-```sh
-pnpm setup:txline -- --network mainnet --service-level 12
-pnpm setup:txline -- --tx-sig <existing-subscription-transaction>
-pnpm setup:txline -- --leagues 501,804,202
-pnpm setup:txline -- --no-smoke
 ```
 
 Keep one network consistent across every value: Solana RPC, TxLINE program ID, subscription transaction, guest JWT host, activation host, and `TXLINE_BASE_URL`. The script prints the `TXLINE_JWT` and `TXLINE_API_TOKEN` to paste into `.dev.vars`.
@@ -221,17 +181,4 @@ No live match on right now? Run a scripted round that plays out over a few minut
   "matchId": "txline_match_...",
   "txlineFixtureId": 123
 }
-```
-
-## Roadmap
-
-Honest about where the edges are:
-
-- **Proof fetch, not yet on-chain execution.** Touchline fetches the real Merkle proof and reports the committed values. Running `validateStat` against the Solana program to verify the proof client-side is the next step — it would let the bot prove the scoreline without trusting the API response at all.
-- **Polling, not streaming.** Scores come from `/snapshot` on a one-minute cron. TxLINE offers `/stream`; moving to it would cut update latency to near-real-time.
-- **Proof latency.** Live updates only become provable once their batch is anchored, so `verify` on a just-scored goal reports "not anchored yet" rather than inventing a proof.
-- **Single-sport.** Soccer stat keys only. The scores API also covers American football and basketball.
-
-## Scope
-
-Touchline supports social predictions, points, leaderboards, odds-aware context, and fan engagement. It deliberately supports no real-money betting, wallets, staking, payments, payouts, or wagering.
+``
