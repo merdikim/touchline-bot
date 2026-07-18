@@ -1,4 +1,8 @@
-import type { NormalizedFixture, NormalizedScoreState, OddsMarket1x2, OddsSummary } from "./types";
+import type { NormalizedFixture, NormalizedScoreState, OddsMarket1x2, OddsSummary, ProofNode, ProvenStat, ScoreProof } from "./types";
+
+// TxLINE soccer stat keys used for score verification.
+export const STAT_KEY_PARTICIPANT1_SCORE = 1;
+export const STAT_KEY_PARTICIPANT2_SCORE = 2;
 
 type JsonObject = Record<string, unknown>;
 
@@ -329,6 +333,66 @@ function indexOfName(names: string[], candidates: string[], fallback: number): n
     }
   }
   return fallback;
+}
+
+function proofNodes(value: unknown): ProofNode[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((node) => {
+    const obj = asObject(node);
+    const hash = getValue(obj, "hash");
+    if (!Array.isArray(hash)) {
+      return [];
+    }
+    return [{
+      hash: hash.filter((byte): byte is number => typeof byte === "number"),
+      isRightSibling: pickBoolean(obj, ["isRightSibling"], false) ?? false
+    }];
+  });
+}
+
+function provenStat(value: unknown): ProvenStat | undefined {
+  const obj = asObject(value);
+  const key = pickNumber(obj, ["key"]);
+  const statValue = pickNumber(obj, ["value"]);
+  if (key === undefined || statValue === undefined) {
+    return undefined;
+  }
+  return { key, value: statValue, period: pickNumber(obj, ["period"], 0) ?? 0 };
+}
+
+/**
+ * Normalizes a /api/scores/stat-validation payload. Handles both legacy mode
+ * (statToProve + statToProve2) and V2 mode (statsToProve), so the caller does not
+ * care which shape TxLINE returned.
+ */
+export function normalizeScoreProof(fixtureId: number, seq: number, raw: unknown): ScoreProof {
+  const obj = asObject(raw);
+
+  const stats = [
+    provenStat(getValue(obj, "statToProve")),
+    provenStat(getValue(obj, "statToProve2")),
+    ...(Array.isArray(getValue(obj, "statsToProve")) ? (getValue(obj, "statsToProve") as unknown[]).map(provenStat) : [])
+  ].filter((stat): stat is ProvenStat => Boolean(stat));
+
+  const scoreFor = (key: number) => stats.find((stat) => stat.key === key)?.value;
+
+  const summary = asObject(getValue(obj, "summary"));
+  const subTreeRoot = getValue(summary, "eventStatsSubTreeRoot");
+
+  return {
+    fixtureId: pickNumber(summary, ["fixtureId"], fixtureId) ?? fixtureId,
+    seq,
+    ts: pickNumber(obj, ["ts"]),
+    participant1Score: scoreFor(STAT_KEY_PARTICIPANT1_SCORE),
+    participant2Score: scoreFor(STAT_KEY_PARTICIPANT2_SCORE),
+    eventStatsSubTreeRoot: Array.isArray(subTreeRoot) ? subTreeRoot.filter((byte): byte is number => typeof byte === "number") : undefined,
+    proofDepth: proofNodes(getValue(obj, "statProof")).length
+      + proofNodes(getValue(obj, "subTreeProof")).length
+      + proofNodes(getValue(obj, "mainTreeProof")).length,
+    raw
+  };
 }
 
 function decimalPrice(price: number | undefined): number | undefined {

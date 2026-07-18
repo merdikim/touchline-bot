@@ -21,6 +21,30 @@ export type NormalizedScoreState = {
   raw: unknown;
 };
 
+export type ProofNode = {
+  hash: number[];
+  isRightSibling: boolean;
+};
+
+export type ProvenStat = {
+  key: number;
+  value: number;
+  period: number;
+};
+
+export type ScoreProof = {
+  fixtureId: number;
+  seq: number;
+  ts?: number;
+  // scores as they were committed to the Merkle tree, not as our cache remembers them
+  participant1Score?: number;
+  participant2Score?: number;
+  eventStatsSubTreeRoot?: number[];
+  // number of sibling hashes linking the stat to the on-chain batch root
+  proofDepth: number;
+  raw: unknown;
+};
+
 export type OddsMarket1x2 = {
   // implied probabilities (percentages, normalized to sum ~100)
   prob1: number;

@@ -66,7 +66,7 @@ export function createTelegramBot(env: WorkerEnv, db: Db) {
   const predictions = new PredictionService(db);
   const leaderboard = new LeaderboardService(db);
   const commentary = new CommentaryService(env.TELEGRAM_BOT_USERNAME);
-  const verification = new VerificationService(db);
+  const verification = new VerificationService(db, txline);
   const reminders = new ReminderService(db);
   const router = new IntentRouter(env);
   const formatter = new AiMessageFormatter(env);
@@ -470,7 +470,7 @@ async function handleIntent(
       await send(activeMatchClarification(target.matches, deps.commentary));
       return;
     }
-    await send(await deps.verification.summarize(target.match.id));
+    await send(await deps.verification.summarize(target.match.id, target.match.txlineFixtureId));
     return;
   }
 

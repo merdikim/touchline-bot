@@ -1,6 +1,6 @@
 import type { WorkerEnv } from "../env";
-import { normalizeFixtures, normalizeOddsSummary, normalizeScoreState } from "./normalizers";
-import type { NormalizedFixture, NormalizedScoreState, OddsSummary } from "./types";
+import { normalizeFixtures, normalizeOddsSummary, normalizeScoreProof, normalizeScoreState, STAT_KEY_PARTICIPANT1_SCORE, STAT_KEY_PARTICIPANT2_SCORE } from "./normalizers";
+import type { NormalizedFixture, NormalizedScoreState, OddsSummary, ScoreProof } from "./types";
 
 export class TxLineClient {
   constructor(private readonly env: Pick<WorkerEnv, "TXLINE_BASE_URL" | "TXLINE_JWT" | "TXLINE_API_TOKEN">) {}
@@ -38,11 +38,26 @@ export class TxLineClient {
     return list.map((item) => normalizeOddsSummary(item, "Participant 1", "Participant 2"));
   }
 
-  async getScoreValidation(params: Record<string, string | number>): Promise<unknown> {
-    return this.get("/api/scores/stat-validation", Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])));
+  /**
+   * Fetches the Merkle proof linking both participant scores at `seq` to the batch
+   * root TxLINE publishes on Solana.
+   *
+   * Returns null when TxLINE has no processed record for (fixtureId, seq) — that is a
+   * 404 and an expected state, not a failure: only anchored score events are provable,
+   * so a just-received live update has no proof until its batch is committed.
+   */
+  async getScoreProof(fixtureId: number, seq: number): Promise<ScoreProof | null> {
+    const raw = await this.get("/api/scores/stat-validation", {
+      fixtureId: String(fixtureId),
+      seq: String(seq),
+      statKey: String(STAT_KEY_PARTICIPANT1_SCORE),
+      statKey2: String(STAT_KEY_PARTICIPANT2_SCORE)
+    }, { allowNotFound: true });
+
+    return raw === null ? null : normalizeScoreProof(fixtureId, seq, raw);
   }
 
-  private async get(path: string, params: Record<string, string | undefined> = {}): Promise<unknown> {
+  private async get(path: string, params: Record<string, string | undefined> = {}, options: { allowNotFound?: boolean } = {}): Promise<unknown> {
     const url = new URL(path, this.env.TXLINE_BASE_URL);
     for (const [key, value] of Object.entries(params)) {
       if (value) {
@@ -57,6 +72,10 @@ export class TxLineClient {
         Accept: "application/json"
       }
     });
+
+    if (response.status === 404 && options.allowNotFound) {
+      return null;
+    }
 
     if (!response.ok) {
       const body = await response.text();
