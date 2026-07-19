@@ -1,0 +1,176 @@
+@import "tailwindcss";
+
+/*
+  Light theme. Palette derives from the Touchline logo, with the green and cyan
+  darkened from their logo values so they pass WCAG AA on white — the logo's
+  #2FA84F and #38BDF8 are both under 3:1 against a white background.
+*/
+@theme {
+  --color-canvas: #ffffff;
+  --color-surface: #fafbfa;
+  --color-bubble: #f1f5f3;
+  --color-border-subtle: #e4eae7;
+
+  --color-ink: #0c1411;
+  --color-muted: #5c6b66;
+
+  /* CTA green — white text on this passes AA. */
+  --color-pitch: #157f3b;
+  --color-pitch-bright: #10692f;
+
+  /* Verification accent, text-safe on white. */
+  --color-signal: #0369a1;
+
+  /* Logo mark. */
+  --color-mark: #101512;
+  --color-mark-eye: #67e8f9;
+
+  /*
+    Chat avatars only. Not brand colours — do not reuse elsewhere.
+    All four carry white text at 5.0:1 or better.
+  */
+  --color-avatar-1: #b45309;
+  --color-avatar-2: #7c3aed;
+  --color-avatar-3: #0f766e;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+@layer base {
+  html,
+  body {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+  }
+
+  :focus-visible {
+    @apply outline-none;
+    outline: 3px solid var(--color-signal);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    @apply bg-pitch text-canvas;
+  }
+}
+
+@layer utilities {
+  /* Scoreboard numerals — no digit jitter. */
+  .nums {
+    @apply font-mono tabular-nums;
+  }
+}
+
+/*
+  Entrance choreography.
+
+  The source design drove this with GSAP; it's reproduced here in CSS so the page
+  ships without a 20KB animation runtime for six one-shot tweens. Durations,
+  delays and stagger match the original; the easings are the CSS equivalents of
+  GSAP's power3.out, power2.inOut and back.out(1.6).
+*/
+@layer utilities {
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes rise-card {
+    from {
+      opacity: 0;
+      transform: translateY(36px) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes pop-msg {
+    from {
+      opacity: 0;
+      transform: translateY(14px) scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes sweep {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+
+  @keyframes drift-1 {
+    to {
+      transform: translate(-70px, 50px);
+    }
+  }
+
+  @keyframes drift-2 {
+    to {
+      transform: translate(60px, -40px);
+    }
+  }
+
+  .anim-hero {
+    opacity: 0;
+    animation: rise 850ms cubic-bezier(0.215, 0.61, 0.355, 1) both;
+  }
+
+  .anim-card {
+    opacity: 0;
+    animation: rise-card 1000ms cubic-bezier(0.215, 0.61, 0.355, 1) 250ms both;
+  }
+
+  .anim-msg {
+    opacity: 0;
+    transform-origin: left bottom;
+    animation: pop-msg 500ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  .anim-sideline {
+    transform: scaleX(0);
+    animation: sweep 1400ms cubic-bezier(0.645, 0.045, 0.355, 1) 400ms both;
+  }
+
+  .anim-glow-1 {
+    animation: drift-1 9s ease-in-out infinite alternate;
+  }
+
+  .anim-glow-2 {
+    animation: drift-2 11s ease-in-out infinite alternate;
+  }
+
+  /*
+    Reduced motion resets to the FINAL state rather than merely cancelling the
+    animation — cancelling alone would strand every element at opacity 0.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    .anim-hero,
+    .anim-card,
+    .anim-msg,
+    .anim-sideline,
+    .anim-glow-1,
+    .anim-glow-2 {
+      animation: none;
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
